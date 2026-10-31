@@ -1,7 +1,6 @@
 package com.mcarplay.app.carlife
 
 import com.mcarplay.app.video.ExternalVideoFrame
-import java.io.ByteArrayOutputStream
 
 /** A complete Annex B access unit delivered by the CarLife video socket. */
 data class CarLifeVideoAccessUnit(
@@ -10,6 +9,13 @@ data class CarLifeVideoAccessUnit(
     val keyFrame: Boolean,
     val sps: ByteArray?,
     val pps: ByteArray?,
+    /**
+     * Dimensions parsed when the parser last saw a parameter set. CarWith keeps
+     * the same SPS for a whole stream, so caching it here avoids re-parsing the
+     * SPS for every frame (the parser runs at video frame rate). Null falls
+     * back to parsing [sps] on demand.
+     */
+    val dimensionsHint: Pair<Int, Int>? = null,
 ) {
     val isCodecConfig: Boolean
         get() = sps != null && pps != null
@@ -21,7 +27,7 @@ data class CarLifeVideoAccessUnit(
             timestampUs = timestamp * 1_000_000L,
         )
 
-    fun dimensions(): Pair<Int, Int>? = sps?.let(::spsDimensions)
+    fun dimensions(): Pair<Int, Int>? = dimensionsHint ?: sps?.let(::spsDimensions)
 }
 
 /**
@@ -34,15 +40,35 @@ data class CarLifeVideoAccessUnit(
  */
 class CarLifeVideoParser {
     private var pendingTimestamp: Long? = null
-    private val pendingNals = ArrayList<ByteArray>()
+
+    /**
+     * Access-unit NALs are concatenated into one growable buffer instead of
+     * one copy per NAL, so a frame costs a single allocation at flush time.
+     */
+    private var pendingData = ByteArray(0)
+    private var pendingBytes = 0
     private var pendingHasVcl = false
     private var pendingHasIdr = false
     private var pendingSps: ByteArray? = null
     private var pendingPps: ByteArray? = null
-    private var annexBBuffer = ByteArray(0)
+
+    /** Unconsumed Annex B bytes: the trailing NAL, which may still be incomplete. */
+    private var annexBBuffer = ByteArray(INITIAL_BUFFER_BYTES)
+    private var annexBSize = 0
     private var annexBTimestamp: Long? = null
+
+    /** Start-code prefix length at offset 0, or 0 while no start code is known. */
+    private var headPrefix = 0
+
+    /** First offset whose start code still needs to be scanned after an append. */
+    private var nextScan = 0
+
     private var latestSps: ByteArray? = null
     private var latestPps: ByteArray? = null
+    private var latestDimensions: Pair<Int, Int>? = null
+
+    /** Reused Exp-Golomb reader: the VCL lookahead runs once per video packet. */
+    private val firstMb = ExpGolombReader()
 
     fun push(
         timestamp: Long,
@@ -53,11 +79,16 @@ class CarLifeVideoParser {
 
         // Complete the previous trailing NAL only when the timestamp changes.
         // Within one second, H.264 start codes are the reliable frame boundary.
-        if (annexBTimestamp != null && annexBTimestamp != timestamp && annexBBuffer.isNotEmpty()) {
-            processAvailableNals(annexBTimestamp!!, final = true, target = complete)
+        val bufferedAt = annexBTimestamp
+        if (bufferedAt != null && bufferedAt != timestamp && annexBSize > 0) {
+            processAvailableNals(bufferedAt, final = true, target = complete)
         }
-        if (annexBBuffer.isEmpty()) annexBTimestamp = timestamp
-        annexBBuffer += payload
+        if (annexBSize == 0) {
+            annexBTimestamp = timestamp
+            headPrefix = 0
+            nextScan = 0
+        }
+        append(payload)
         processAvailableNals(timestamp, final = false, target = complete)
         return complete
     }
@@ -71,133 +102,204 @@ class CarLifeVideoParser {
         return complete
     }
 
+    /**
+     * Consumes every complete NAL in [annexBBuffer] and keeps the trailing one
+     * (whose body may still be in flight) for the next packet. Start-code
+     * scanning resumes at [nextScan] instead of rescanning the retained NAL,
+     * which keeps fragmented key frames linear instead of quadratic.
+     */
     private fun processAvailableNals(
         timestamp: Long,
         final: Boolean,
         target: MutableList<CarLifeVideoAccessUnit>,
     ) {
-        val starts = annexBStartCodes(annexBBuffer)
-        var startsAccessUnitBeforeTrailing = false
-        if (starts.isEmpty()) {
-            if (final && annexBBuffer.isNotEmpty()) annexBBuffer = ByteArray(0)
+        if (annexBSize < 3) {
+            if (final) clearAnnexBBuffer()
             return
         }
-        for (index in starts.indices) {
-            val (start, prefixLength) = starts[index]
-            if (index == starts.lastIndex && !final) break
-            val bodyStart = start + prefixLength
-            val bodyEnd = if (index + 1 < starts.size) starts[index + 1].first else annexBBuffer.size
-            if (bodyEnd > bodyStart) {
-                consumeNal(annexBBuffer.copyOfRange(bodyStart, bodyEnd), timestamp, target)
+
+        var currentStart = if (headPrefix > 0) 0 else -1
+        var currentPrefix = headPrefix
+        var index = if (currentStart >= 0) maxOf(headPrefix, nextScan) else maxOf(0, nextScan)
+        while (index + 3 <= annexBSize) {
+            val prefix = startCodeLengthAt(index)
+            if (prefix == 0) {
+                index++
+                continue
             }
+            if (currentStart >= 0) {
+                consumeNal(currentStart + currentPrefix, index, timestamp, target)
+            }
+            currentStart = index
+            currentPrefix = prefix
+            index += prefix
         }
-        if (!final) {
-            val (start, prefixLength) = starts.last()
-            if (start + prefixLength < annexBBuffer.size) {
-                val trailing = annexBBuffer.copyOfRange(start + prefixLength, annexBBuffer.size)
-                val type = trailing[0].toInt() and 0x1F
-                val startsAccessUnit =
-                    pendingHasVcl &&
-                        (
-                            type == 9 ||
-                                type == 6 ||
-                                type == 7 ||
-                                type == 8 ||
-                                ((type == 1 || type == 5) && firstMbInSlice(trailing) == 0)
-                        )
-                startsAccessUnitBeforeTrailing = startsAccessUnit
+
+        if (final) {
+            if (currentStart >= 0 && currentStart + currentPrefix < annexBSize) {
+                consumeNal(currentStart + currentPrefix, annexBSize, timestamp, target)
             }
+            clearAnnexBBuffer()
+            return
         }
-        val lastStart = starts.last().first
-        annexBBuffer =
-            if (final) {
-                ByteArray(0)
-            } else {
-                annexBBuffer.copyOfRange(lastStart, annexBBuffer.size)
-            }
-        if (annexBBuffer.isEmpty()) annexBTimestamp = null
-        // Flushing in consumeNal would drop a trailing NAL whose start code has
+
+        if (currentStart < 0) {
+            // No start code yet: keep the bytes and re-check the boundary next time.
+            nextScan = maxOf(0, annexBSize - 3)
+            return
+        }
+
+        // Flush in consumeNal would drop a trailing NAL whose start code has
         // already arrived but whose body is still waiting for the next packet.
-        if (startsAccessUnitBeforeTrailing) flushAccessUnit(target)
+        if (trailingStartsAccessUnit(currentStart + currentPrefix)) {
+            flushAccessUnit(target)
+        }
+
+        val tailSize = annexBSize - currentStart
+        System.arraycopy(annexBBuffer, currentStart, annexBBuffer, 0, tailSize)
+        annexBSize = tailSize
+        headPrefix = currentPrefix
+        nextScan = maxOf(headPrefix, tailSize - 3)
+    }
+
+    /** Append [payload] to the retained Annex B buffer, growing it as needed. */
+    private fun append(payload: ByteArray) {
+        val required = annexBSize + payload.size
+        if (required > annexBBuffer.size) {
+            var capacity = maxOf(annexBBuffer.size, INITIAL_BUFFER_BYTES)
+            while (capacity < required) capacity = maxOf(required, capacity * 2)
+            annexBBuffer = annexBBuffer.copyOf(capacity)
+        }
+        payload.copyInto(annexBBuffer, annexBSize)
+        annexBSize = required
+    }
+
+    /** Returns 3/4 for a start code at [index], or 0 when there is none. */
+    private fun startCodeLengthAt(index: Int): Int {
+        if (index + 3 > annexBSize || annexBBuffer[index] != 0.toByte() || annexBBuffer[index + 1] != 0.toByte()) return 0
+        if (annexBBuffer[index + 2] == 1.toByte()) return 3
+        if (index + 4 <= annexBSize && annexBBuffer[index + 2] == 0.toByte() && annexBBuffer[index + 3] == 1.toByte()) {
+            return 4
+        }
+        return 0
+    }
+
+    /** True when the NAL at [bodyStart] opens a new access unit. */
+    private fun trailingStartsAccessUnit(bodyStart: Int): Boolean {
+        if (!pendingHasVcl || bodyStart >= annexBSize) return false
+        val type = annexBBuffer[bodyStart].toInt() and 0x1F
+        return type == 9 ||
+            type == 6 ||
+            type == 7 ||
+            type == 8 ||
+            ((type == 1 || type == 5) && firstMbInSliceAt(bodyStart, annexBSize) == 0)
+    }
+
+    private fun clearAnnexBBuffer() {
+        annexBSize = 0
+        annexBTimestamp = null
+        headPrefix = 0
+        nextScan = 0
     }
 
     private fun consumeNal(
-        nal: ByteArray,
+        start: Int,
+        end: Int,
         timestamp: Long,
         target: MutableList<CarLifeVideoAccessUnit>,
     ) {
-        if (nal.isEmpty()) return
-        val type = nal[0].toInt() and 0x1F
+        if (end <= start) return
+        val type = annexBBuffer[start].toInt() and 0x1F
         val isVcl = type == 1 || type == 5
         val startsAccessUnit =
             type == 9 ||
                 (pendingHasVcl && (type == 6 || type == 7 || type == 8)) ||
-                (pendingHasVcl && isVcl && firstMbInSlice(nal) == 0)
+                (pendingHasVcl && isVcl && firstMbInSliceAt(start, end) == 0)
         if (startsAccessUnit) flushAccessUnit(target)
         if (pendingTimestamp == null) pendingTimestamp = timestamp
-        pendingNals += nal
+        appendPendingNal(start, end)
         pendingHasVcl = pendingHasVcl || isVcl
         when (type) {
             5 -> pendingHasIdr = true
             7 -> {
-                pendingSps = nal
-                latestSps = nal
+                val sps = annexBBuffer.copyOfRange(start, end)
+                pendingSps = sps
+                latestSps = sps
+                latestDimensions = spsDimensions(sps)
             }
 
             8 -> {
-                pendingPps = nal
-                latestPps = nal
+                val pps = annexBBuffer.copyOfRange(start, end)
+                pendingPps = pps
+                latestPps = pps
             }
         }
-        val total =
-            pendingNals.sumOf {
-                it.size + ANNEX_B_START_CODE.size
-            }
-        if (total > MAX_ACCESS_UNIT_BYTES) {
-            pendingNals.clear()
-            pendingTimestamp = null
-            pendingHasVcl = false
-            pendingHasIdr = false
-            pendingSps = null
-            pendingPps = null
+        if (pendingBytes > MAX_ACCESS_UNIT_BYTES) resetAccessUnit()
+    }
+
+    /** Appends `00 00 00 01` + the NAL bytes to the pending access unit. */
+    private fun appendPendingNal(
+        start: Int,
+        end: Int,
+    ) {
+        val needed = pendingBytes + ANNEX_B_START_CODE.size + (end - start)
+        if (needed > pendingData.size) {
+            var capacity = maxOf(pendingData.size, INITIAL_PENDING_BYTES)
+            while (capacity < needed) capacity = maxOf(needed, capacity * 2)
+            pendingData = pendingData.copyOf(capacity)
         }
+        ANNEX_B_START_CODE.copyInto(pendingData, pendingBytes)
+        annexBBuffer.copyInto(pendingData, pendingBytes + ANNEX_B_START_CODE.size, start, end)
+        pendingBytes = needed
     }
 
     private fun flushAccessUnit(target: MutableList<CarLifeVideoAccessUnit>) {
         val timestamp = pendingTimestamp
-        if (timestamp == null || pendingNals.isEmpty()) {
+        if (timestamp == null || pendingBytes == 0) {
             resetAccessUnit()
             return
-        }
-        val bytes = ByteArrayOutputStream()
-        pendingNals.forEach { nal ->
-            bytes.write(ANNEX_B_START_CODE)
-            bytes.write(nal)
         }
         target +=
             CarLifeVideoAccessUnit(
                 timestamp = timestamp,
-                data = bytes.toByteArray(),
+                data = pendingData.copyOf(pendingBytes),
                 keyFrame = pendingHasIdr,
                 // Repeated parameter sets are not required in every frame, but
                 // keeping the latest pair lets VideoSender build avcC reliably.
                 sps = pendingSps ?: latestSps,
                 pps = pendingPps ?: latestPps,
+                dimensionsHint = latestDimensions,
             )
         resetAccessUnit()
     }
 
     private fun resetAccessUnit() {
         pendingTimestamp = null
-        pendingNals.clear()
+        pendingBytes = 0
         pendingHasVcl = false
         pendingHasIdr = false
         pendingSps = null
         pendingPps = null
     }
 
+    private fun firstMbInSliceAt(
+        start: Int,
+        end: Int,
+    ): Int? {
+        if (end - start < 2) return null
+        val type = annexBBuffer[start].toInt() and 0x1F
+        if (type != 1 && type != 5) return null
+        firstMb.reset(annexBBuffer, start + 1, minOf(end, start + FIRST_MB_PROBE_BYTES))
+        return firstMb.readUe()
+    }
+
     private companion object {
         val ANNEX_B_START_CODE = byteArrayOf(0, 0, 0, 1)
+        const val INITIAL_BUFFER_BYTES = 64 * 1024
+        const val INITIAL_PENDING_BYTES = 64 * 1024
+
+        /** Bytes after the NAL header inspected for first_mb_in_slice (header + ue(v)). */
+        const val FIRST_MB_PROBE_BYTES = 32
         const val MAX_ACCESS_UNIT_BYTES = 4 * 1024 * 1024
     }
 }
@@ -241,49 +343,90 @@ internal fun annexBStartCodes(data: ByteArray): List<Pair<Int, Int>> {
 
 /**
  * Reads the unsigned Exp-Golomb value immediately after the one-byte NAL
- * header. Emulation-prevention bytes are removed from the small prefix only.
+ * header. Emulation-prevention bytes are removed on the fly from the small
+ * prefix (no intermediate copy).
  */
 internal fun firstMbInSlice(nal: ByteArray): Int? {
     if (nal.size < 2) return null
     val type = nal[0].toInt() and 0x1F
     if (type != 1 && type != 5) return null
-    val rbsp = ByteArrayOutputStream()
-    var zeros = 0
-    for (index in 1 until minOf(nal.size, 32)) {
-        val value = nal[index].toInt() and 0xFF
-        if (zeros >= 2 && value == 3) {
-            zeros = 0
-            continue
-        }
-        rbsp.write(value)
-        zeros = if (value == 0) zeros + 1 else 0
-    }
-    val bytes = rbsp.toByteArray()
-    var bit = 0
+    val reader = ExpGolombReader()
+    reader.reset(nal, 1, minOf(nal.size, 32))
+    return reader.readUe()
+}
 
-    fun readBit(): Int? {
-        if (bit >= bytes.size * 8) return null
-        val value = (bytes[bit / 8].toInt() ushr (7 - bit % 8)) and 1
-        bit++
-        return value
+/**
+ * Bit reader over RBSP bytes with emulation-prevention removal. Reusable so
+ * the per-packet access-unit lookahead does not allocate.
+ */
+private class ExpGolombReader {
+    private var data = EMPTY
+    private var index = 0
+    private var end = 0
+    private var zeros = 0
+    private var current = 0
+    private var remaining = 0
+
+    fun reset(
+        data: ByteArray,
+        start: Int,
+        end: Int,
+    ) {
+        this.data = data
+        index = start
+        this.end = end
+        zeros = 0
+        current = 0
+        remaining = 0
     }
-    var leadingZeros = 0
-    while (true) {
-        when (readBit()) {
-            null -> return null
-            1 -> break
-            else -> {
-                leadingZeros++
-                if (leadingZeros >= 32) return null
+
+    /** Returns the ue(v) value at the current position, or null when truncated. */
+    fun readUe(): Int? {
+        var leadingZeros = 0
+        while (true) {
+            when (readBit()) {
+                null -> return null
+                1 -> break
+                else -> {
+                    leadingZeros++
+                    if (leadingZeros >= 32) return null
+                }
             }
         }
+        var value = 1
+        repeat(leadingZeros) {
+            val next = readBit() ?: return null
+            value = (value shl 1) or next
+        }
+        return value - 1
     }
-    var value = 1
-    repeat(leadingZeros) {
-        val next = readBit() ?: return null
-        value = (value shl 1) or next
+
+    private fun readBit(): Int? {
+        if (remaining == 0) {
+            val byte = nextRbspByte() ?: return null
+            current = byte
+            remaining = 8
+        }
+        remaining--
+        return (current ushr remaining) and 1
     }
-    return value - 1
+
+    private fun nextRbspByte(): Int? {
+        while (index < end) {
+            val value = data[index++].toInt() and 0xFF
+            if (zeros >= 2 && value == 3) {
+                zeros = 0
+                continue
+            }
+            zeros = if (value == 0) zeros + 1 else 0
+            return value
+        }
+        return null
+    }
+
+    private companion object {
+        val EMPTY = ByteArray(0)
+    }
 }
 
 /** Parse pic_width_in_mbs/pic_height_in_map_units from a baseline/high SPS. */

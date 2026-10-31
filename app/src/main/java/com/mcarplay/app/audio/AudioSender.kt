@@ -92,14 +92,19 @@ class AudioSender(
         /** 小端 s16 → 大端 s16（每两字节换序）。CarPlay 线格式要求大端样本。 */
         fun bigEndianS16(source: ByteArray): ByteArray {
             val out = source.copyOf()
+            swapS16InPlace(out)
+            return out
+        }
+
+        /** 原地换序小端 s16 → 大端 s16；调用方必须拥有 [samples]（推流路径复用采集缓冲）。 */
+        fun swapS16InPlace(samples: ByteArray) {
             var index = 0
-            while (index + 1 < out.size) {
-                val tmp = out[index]
-                out[index] = out[index + 1]
-                out[index + 1] = tmp
+            while (index + 1 < samples.size) {
+                val tmp = samples[index]
+                samples[index] = samples[index + 1]
+                samples[index + 1] = tmp
                 index += 2
             }
-            return out
         }
     }
 
@@ -683,7 +688,17 @@ class AudioSender(
 
     /** 封包 + 发送一包（同步更新 seq/ts/nonce 游标）。返回 false 表示链路已断。 */
     private fun sendPayload(payload: ByteArray): Boolean {
-        val wire = sealPacket(payload, sequence, timestamp, nonceCounter, markerPending)
+        // PCM 负载来自本类持有的复用缓冲（采集缓冲 / 外部拼帧缓冲），可以原地换序；
+        // AAC 负载是编码器新建的帧，不需要换序。这条路径每包省掉一次 2KB 拷贝。
+        val wire =
+            sealPacket(
+                payload,
+                sequence,
+                timestamp,
+                nonceCounter,
+                markerPending,
+                swapPayloadInPlace = codec != AudioCodec.AAC_LC,
+            )
         markerPending = false
         sequence = (sequence + 1) and 0xFFFF
         timestamp += samplesPerPacket
@@ -739,6 +754,11 @@ class AudioSender(
         timestamp: Long,
         nonceCounter: Long,
         marker: Boolean = false,
+        /**
+         * 允许原地换序 [pcm]（推流路径的缓冲由本类独占）。测试/其他调用方保持
+         * false，输入不会被修改。
+         */
+        swapPayloadInPlace: Boolean = false,
     ): ByteArray {
         val header = buildRtpHeader(sequence, timestamp, marker)
         // AAD = header 的 timestamp+ssrc 段（字节 4..12）——catplay "modern AAD" / DiPlay 解密同款
@@ -749,7 +769,16 @@ class AudioSender(
         //
         // AAC 通路不做换序：AAC 比特流是字节流，不是 16bit 样本序列，换序会直接把
         // 比特流搅烂（车机解码失败 → 有包无声）。
-        val wirePayload = if (codec == AudioCodec.AAC_LC) pcm else bigEndianS16(pcm)
+        val wirePayload =
+            when {
+                codec == AudioCodec.AAC_LC -> pcm
+                swapPayloadInPlace -> {
+                    swapS16InPlace(pcm)
+                    pcm
+                }
+
+                else -> bigEndianS16(pcm)
+            }
         val sealed = AirPlayCrypto.chachaSeal(streamKey, AirPlayCrypto.nonce64(nonceCounter), wirePayload, aad)
         val wire = ByteArray(RTP_HEADER_LEN + sealed.size + NONCE_SIZE)
         header.copyInto(wire, 0)

@@ -43,6 +43,25 @@ class PcmResamplerTest {
         PcmResampler(44_100, 2, 48_000).convert(byteArrayOf(1, 2))
     }
 
+    @Test
+    fun emptyChunkProducesNoSamples() {
+        assertEquals(0, PcmResampler(44_100, 2, 48_000).convert(ByteArray(0)).size)
+    }
+
+    @Test
+    fun singleFrameChunksMatchOneShotConversion() {
+        val input = ByteArray(4_000) { (it * 29 + 7).toByte() }
+        val whole = PcmResampler(44_100, 2, 48_000).convert(input)
+        val streaming = PcmResampler(44_100, 2, 48_000)
+        val chunks =
+            input
+                .toList()
+                .chunked(4)
+                .flatMap { streaming.convert(it.toByteArray()).toList() }
+                .toByteArray()
+        assertArrayEquals(whole, chunks)
+    }
+
     private fun samples(vararg values: Int): ByteArray =
         ByteBuffer
             .allocate(values.size * 2)

@@ -299,17 +299,21 @@ class VideoSender(
         }
     }
 
-    private fun packLengthPrefixed(nalUnits: List<ByteArray>): ByteArray {
-        val out = ByteArrayOutputStream()
+    internal fun packLengthPrefixed(nalUnits: List<ByteArray>): ByteArray {
+        // Exact sizing avoids a growing stream buffer plus its final copy.
+        val packed = ByteArray(nalUnits.sumOf { it.size + LENGTH_PREFIX_SIZE })
+        var offset = 0
         for (nal in nalUnits) {
             val value = if (nal.isNotEmpty() && (nal[0].toInt() and 0x1F) == 7) patchSpsLevel(nal) else nal
-            out.write((value.size ushr 24) and 0xFF)
-            out.write((value.size ushr 16) and 0xFF)
-            out.write((value.size ushr 8) and 0xFF)
-            out.write(value.size and 0xFF)
-            out.write(value)
+            val length = value.size
+            packed[offset] = (length ushr 24).toByte()
+            packed[offset + 1] = (length ushr 16).toByte()
+            packed[offset + 2] = (length ushr 8).toByte()
+            packed[offset + 3] = length.toByte()
+            value.copyInto(packed, offset + LENGTH_PREFIX_SIZE)
+            offset += LENGTH_PREFIX_SIZE + length
         }
-        return out.toByteArray()
+        return packed
     }
 
     private fun buildAvcC(
@@ -347,6 +351,7 @@ class VideoSender(
         log("VIDEO: ✓ CarWith VideoConfig 已发送 avcC=${avcC.size}B ${width}x$height")
     }
 
+    /** Sends a freshly packed, caller-owned body (AES-CTR encrypts it in place). */
     private fun sendPlainFrame(
         plain: ByteArray,
         keyFrame: Boolean,
@@ -363,9 +368,9 @@ class VideoSender(
                     AirPlayCrypto.chachaSeal(cipher.key, AirPlayCrypto.nonce64(frameCounter), plain, header)
 
                 is StreamFrameCipher.AesCtr -> {
-                    val encrypted = plain.copyOf()
-                    aesStream?.applyKeystream(encrypted)
-                    encrypted
+                    // packed 是每帧新建的缓冲，原地异或即可。
+                    aesStream?.applyKeystream(plain)
+                    plain
                 }
             }
         frameCounter++
@@ -511,18 +516,9 @@ class VideoSender(
         if (nalUnits.isEmpty()) return
 
         // 关键帧内嵌的 SPS 同步打 level 补丁：车机会用帧内 SPS 更新解码器参数，
-        // 只改 csd 不改帧内 SPS 的话，收到第一个关键帧就又变回低 level 了
-        val packed = ByteArrayOutputStream(size)
-        for (nal in nalUnits) {
-            val out =
-                if (nal.isNotEmpty() && (nal[0].toInt() and 0x1F) == 7) patchSpsLevel(nal) else nal
-            packed.write((out.size ushr 24) and 0xFF)
-            packed.write((out.size ushr 16) and 0xFF)
-            packed.write((out.size ushr 8) and 0xFF)
-            packed.write(out.size and 0xFF)
-            packed.write(out)
-        }
-        val plain = packed.toByteArray()
+        // 只改 csd 不改帧内 SPS 的话，收到第一个关键帧就又变回低 level 了。
+        // packLengthPrefixed 一次按精确长度分配，省掉流式缓冲的增长与末尾拷贝。
+        val plain = packLengthPrefixed(nalUnits)
 
         // 加密方式按会话的 et 选择（catplay ScreenFrameCodec）：
         //  - ChaCha：header 作 AAD，body 长度含 16B tag；
@@ -539,9 +535,9 @@ class VideoSender(
                 is StreamFrameCipher.ChaCha ->
                     AirPlayCrypto.chachaSeal(cipher.key, AirPlayCrypto.nonce64(frameCounter), plain, header)
                 is StreamFrameCipher.AesCtr -> {
-                    val encrypted = plain.copyOf()
-                    aesStream?.applyKeystream(encrypted)
-                    encrypted
+                    // plain 是本次新建的帧缓冲，原地异或即可，无需再复制一份密文。
+                    aesStream?.applyKeystream(plain)
+                    plain
                 }
             }
         frameCounter++
@@ -629,6 +625,9 @@ class VideoSender(
         private const val OP_KEEP_ALIVE = 2
         private const val OP_KEEP_ALIVE_WITH_BODY = 5
         private const val TAG_SIZE = 16
+
+        /** 每个长度前缀 NAL 的 4 字节大端长度字段。 */
+        private const val LENGTH_PREFIX_SIZE = 4
 
         /**
          * 头部位标志（catplay `ScreenFlag`）：写进 `small_param[1]`（头部偏移 6）。

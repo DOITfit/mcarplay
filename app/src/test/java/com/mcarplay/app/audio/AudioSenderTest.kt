@@ -177,4 +177,12 @@ class AudioSenderTest {
         // 明文相同但 nonce 递增：密文必须不同（防 nonce 复用）
         org.junit.Assert.assertFalse(cipherA.contentEquals(cipherB))
     }
+
+    @Test
+    fun sealPacketLeavesCallerPcmUntouchedByDefault() {
+        val pcm = ByteArray(AudioSender.PACKET_BYTES) { (it * 11 + 3).toByte() }
+        val original = pcm.copyOf()
+        sender().sealPacket(pcm, sequence = 1, timestamp = 0, nonceCounter = 0)
+        assertArrayEquals(original, pcm)
+    }
 }

@@ -136,4 +136,93 @@ class CarLifeVideoParserTest {
         assertNull(firstMbInSlice(byteArrayOf(0x61)))
         assertNull(firstMbInSlice(byteArrayOf(0x67, 0x80.toByte())))
     }
+
+    @Test
+    fun threeByteStartCodesAreNormalizedToFourByte() {
+        val parser = CarLifeVideoParser()
+        parser.push(1, byteArrayOf(0, 0, 1, 0x41, 0x80.toByte()))
+        val frame = parser.flush().single()
+        assertTrue(frame.data.contentEquals(byteArrayOf(0, 0, 0, 1, 0x41, 0x80.toByte())))
+    }
+
+    @Test
+    fun startCodeSplitAcrossPacketsIsReassembled() {
+        val parser = CarLifeVideoParser()
+        assertTrue(parser.push(1, byteArrayOf(0, 0)).isEmpty())
+        parser.push(1, byteArrayOf(1, 0x41, 0x80.toByte()))
+        val frame = parser.flush().single()
+        assertTrue(frame.data.contentEquals(byteArrayOf(0, 0, 0, 1, 0x41, 0x80.toByte())))
+    }
+
+    @Test
+    fun fourByteStartCodeSplitBeforeMarkerIsDetected() {
+        val parser = CarLifeVideoParser()
+        assertTrue(parser.push(1, byteArrayOf(0, 0, 0)).isEmpty())
+        parser.push(1, byteArrayOf(1, 0x41, 0x80.toByte()))
+        val frame = parser.flush().single()
+        assertTrue(frame.data.contentEquals(byteArrayOf(0, 0, 0, 1, 0x41, 0x80.toByte())))
+    }
+
+    @Test
+    fun garbageBeforeFirstStartCodeIsDropped() {
+        val parser = CarLifeVideoParser()
+        parser.push(1, byteArrayOf(0xFF.toByte(), 0xAB.toByte()) + byteArrayOf(0, 0, 0, 1, 0x41, 0x80.toByte()))
+        val frame = parser.flush().single()
+        assertTrue(frame.data.contentEquals(byteArrayOf(0, 0, 0, 1, 0x41, 0x80.toByte())))
+    }
+
+    @Test
+    fun largeKeyFrameSplitIntoTinyPacketsIsReassembled() {
+        val body = ByteArray(200_000) { (it % 251 + 1).toByte() }
+        val expected = byteArrayOf(0, 0, 0, 1, 0x65) + body
+        val parser = CarLifeVideoParser()
+        val frames = ArrayList<CarLifeVideoAccessUnit>()
+        expected.toList().chunked(997).forEach { chunk ->
+            frames += parser.push(7, chunk.toByteArray())
+        }
+        frames += parser.flush()
+        assertEquals(1, frames.size)
+        assertTrue(frames.single().keyFrame)
+        assertTrue(frames.single().data.contentEquals(expected))
+    }
+
+    @Test
+    fun multipleNalsInOnePacketKeepFourByteStartCodes() {
+        val parser = CarLifeVideoParser()
+        parser.push(
+            4,
+            annexB(
+                byteArrayOf(0x67, 0x42, 0x80.toByte(), 0x1F),
+                byteArrayOf(0x68, 0xCE.toByte()),
+                byteArrayOf(0x65, 0x80.toByte(), 1, 2),
+            ),
+        )
+        val frame = parser.flush().single()
+        assertTrue(frame.isCodecConfig)
+        assertTrue(
+            frame.data.contentEquals(
+                annexB(
+                    byteArrayOf(0x67, 0x42, 0x80.toByte(), 0x1F),
+                    byteArrayOf(0x68, 0xCE.toByte()),
+                    byteArrayOf(0x65, 0x80.toByte(), 1, 2),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun dimensionsAreCachedAcrossFrames() {
+        val parser = CarLifeVideoParser()
+        parser.push(20, annexB(sps, byteArrayOf(0x68, 0xCE.toByte(), 0x06, 0xE2.toByte()), byteArrayOf(0x65, 0x80.toByte())))
+        val key = parser.flush().single()
+        assertEquals(1280 to 720, key.dimensions())
+        assertEquals(1280 to 720, key.dimensionsHint)
+
+        parser.push(21, annexB(byteArrayOf(0x41, 0x80.toByte(), 3, 4)))
+        val next = parser.flush().single()
+        assertEquals(1280 to 720, next.dimensions())
+        assertEquals(1280 to 720, next.dimensionsHint)
+    }
+
+    private fun annexB(vararg nals: ByteArray): ByteArray = nals.fold(ByteArray(0)) { acc, nal -> acc + byteArrayOf(0, 0, 0, 1) + nal }
 }
