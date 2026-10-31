@@ -692,6 +692,16 @@ class DisplayPanelFragment : SettingsPanelFragment() {
         hidRawOn.setOnClickListener { applyHidRaw(true) }
         hidRawOff.setOnClickListener { applyHidRaw(false) }
 
+        // 低配车机模式（默认关）：限制 CarWith 编码分辨率与合成器帧率，下次连接起效
+        bindToggle(
+            view.findViewById(R.id.btnLowEndOn),
+            view.findViewById(R.id.btnLowEndOff),
+            CompatibilityPrefs.lowEndMode(ctx),
+        ) { enabled ->
+            CompatibilityPrefs.setLowEndMode(ctx, enabled)
+            hostToast(getString(if (enabled) R.string.sf_low_end_on else R.string.sf_low_end_off))
+        }
+
         // 兼容兜底开关（默认关）：恢复统一兼容策略之前的宽松行为，下次连接起效
         bindToggle(
             view.findViewById(R.id.btnPlainFallbackOn),
@@ -807,13 +817,20 @@ class DisplayPanelFragment : SettingsPanelFragment() {
         fun applyFps(fps: Int) {
             DisplayPrefs.setFps(ctx, fps)
             refreshFps(fps < 60)
+            val effectiveFps = if (CompatibilityPrefs.lowEndMode(ctx)) minOf(fps, 30) else fps
             VirtualLauncher
-                .setStreamFps(fps)
+                .setStreamFps(effectiveFps)
             val live =
                 SessionController.videoSender
                     ?.isRunning == true
-            hostToast(getString(if (live) R.string.sf_fps_live else R.string.sf_fps_set, fps))
-            if (live) SessionController.activeTargetFps = fps
+            hostToast(
+                if (effectiveFps != fps) {
+                    getString(R.string.sf_fps_capped_low_end)
+                } else {
+                    getString(if (live) R.string.sf_fps_live else R.string.sf_fps_set, fps)
+                },
+            )
+            if (live) SessionController.activeTargetFps = effectiveFps
         }
         fps30.setOnClickListener { applyFps(30) }
         fps60.setOnClickListener { applyFps(60) }

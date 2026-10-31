@@ -86,10 +86,25 @@ class VideoSender(
     private var bytesSinceKeepAlive = 0L
     private var keepAliveCount = 0L
     private var cachedVideoConfig: ByteArray? = null
-    private val externalQueue = java.util.concurrent.LinkedBlockingQueue<ExternalVideoFrame>(64)
+
+    // 最多 16 帧（30fps ≈ 0.53s、60fps ≈ 0.27s）。排队只会累积端到端延迟；
+    // 网络/接收端跟不上时宁可丢旧 GOP 再从关键帧恢复。
+    private val externalQueue = java.util.concurrent.LinkedBlockingQueue<ExternalVideoFrame>(16)
+
+    /** 外部帧队列溢出的次数（诊断日志限流用；仅 CarLife 读线程访问）。 */
+    private var externalOverflowCount = 0L
 
     @Volatile
     private var framesSent = 0L
+
+    /**
+     * 最近一次成功写出的时刻（uptimeMillis）。车机解码器过载/停止消费时，TCP 窗口
+     * 会让 `write` 永久阻塞；看门狗据此主动断开，避免画面冻结后一直挂着。
+     */
+    @Volatile
+    private var lastSendProgressAt = 0L
+
+    private var stallGuard: Thread? = null
 
     /** 推流是否活跃（静默降噪守卫判断用：start 失败时保持 false）。 */
     val isRunning: Boolean get() = running.get()
@@ -138,10 +153,18 @@ class VideoSender(
             if (externalVideoSource != null) {
                 running.set(true)
                 lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
-                Thread({ drainExternalVideo() }, "video-external-drain").apply {
+                Thread(
+                    {
+                        // 推流线程按显示优先级调度：后台任务抢占会让 60fps 源抖动/掉帧。
+                        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+                        drainExternalVideo()
+                    },
+                    "video-external-drain",
+                ).apply {
                     isDaemon = true
                     start()
                 }
+                startStallGuard()
                 log("VIDEO: 外部 CarWith H.264 输入已启动 ${width}x$height@$targetFps")
                 return true
             }
@@ -158,6 +181,10 @@ class VideoSender(
                     setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                     setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    // 实时编码提示：部分编码器按 operating rate 选性能点/优先出帧，
+                    // 缺省时高分辨率 60fps 可能被降频到 30fps。priority=0 表示实时。
+                    setInteger(MediaFormat.KEY_OPERATING_RATE, targetFps)
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
                     // 固定 H.264 level 4.0（SPS level_idc=40，真 iPhone 同款流形态）。
                     // 不固定时编码器按「分辨率+帧率」自动选：默认 30fps 下 1412x654
                     // 合法落入 level 3.2——奥迪 DELPHI 解码器对该 level 静默不渲染
@@ -183,6 +210,8 @@ class VideoSender(
                         setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                         setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
                         setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                        setInteger(MediaFormat.KEY_OPERATING_RATE, targetFps)
+                        setInteger(MediaFormat.KEY_PRIORITY, 0)
                     }
                 codec.configure(fallback, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
@@ -195,10 +224,17 @@ class VideoSender(
 
             onSurfaceReady(surface)
 
-            Thread({ drainEncoder() }, "video-drain").apply {
+            Thread(
+                {
+                    runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+                    drainEncoder()
+                },
+                "video-drain",
+            ).apply {
                 isDaemon = true
                 start()
             }
+            startStallGuard()
             true
         } catch (error: Exception) {
             log("VIDEO: 启动失败 - ${error.message}")
@@ -210,6 +246,8 @@ class VideoSender(
     fun stop() {
         running.set(false)
         externalQueue.clear()
+        stallGuard?.interrupt()
+        stallGuard = null
         runCatching { encoder?.stop() }
         runCatching { encoder?.release() }
         encoder = null
@@ -245,15 +283,30 @@ class VideoSender(
     /**
      * Submit one complete Annex B access unit from CarWith.
      *
-     * Returns false when the bounded queue is full; callers should drop the
-     * packet rather than block CarLife's video reader.
+     * Returns false when the link is behind and this frame cannot be sent
+     * without adding latency; callers should drop the packet (and wait for a
+     * key frame) rather than block CarLife's video reader.
      */
-    fun submitExternalFrame(frame: ExternalVideoFrame): Boolean =
-        if (externalVideoSource == null || !running.get()) {
-            false
-        } else {
-            externalQueue.offer(frame)
+    fun submitExternalFrame(frame: ExternalVideoFrame): Boolean {
+        if (externalVideoSource == null || !running.get()) return false
+        if (externalQueue.offer(frame)) return true
+        // The queue holds up to 16 frames (~0.3-0.5s). Draining that stale backlog
+        // first only grows latency; a dropped GOP is already unavoidable once
+        // the queue is full, so clear it and resume from a key frame.
+        externalQueue.clear()
+        externalOverflowCount++
+        if (externalOverflowCount == 1L || externalOverflowCount % 60L == 0L) {
+            log(
+                "VIDEO: 外部帧积压，丢弃旧帧（第 $externalOverflowCount 次，" +
+                    if (frame.keyFrame) "接受关键帧）" else "请求关键帧）",
+            )
         }
+        if (frame.keyFrame) return externalQueue.offer(frame)
+        // 队列已满说明网络/接收端跟不上；主动让 CarWith 重新出 IDR，
+        // 缩短 join gate 等待下一个周期关键帧的时间。
+        runCatching { externalVideoSource?.requestKeyFrame() }
+        return false
+    }
 
     /** Align the CarPlay canvas to the SPS dimensions from CarWith. */
     fun setVideoDimensions(
@@ -346,6 +399,7 @@ class VideoSender(
         output.write(buildVideoConfigHeader(avcC.size, width, height))
         output.write(avcC)
         output.flush()
+        markSendProgress()
         cachedVideoConfig = avcC
         configSent = true
         log("VIDEO: ✓ CarWith VideoConfig 已发送 avcC=${avcC.size}B ${width}x$height")
@@ -377,6 +431,7 @@ class VideoSender(
         output.write(header)
         output.write(sealed)
         output.flush()
+        markSendProgress()
         framesSent++
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()
@@ -455,6 +510,7 @@ class VideoSender(
         val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
         output.write(frame)
         output.flush()
+        markSendProgress()
         if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
             log(
                 "VIDEO: keepAlive #$keepAliveCount " +
@@ -490,6 +546,7 @@ class VideoSender(
         output.write(header)
         output.write(body)
         output.flush()
+        markSendProgress()
         configSent = true
         log(
             "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${rawSps.size}B/PPS ${pps.size}B，" +
@@ -544,6 +601,7 @@ class VideoSender(
         output.write(header)
         output.write(sealed)
         output.flush()
+        markSendProgress()
         framesSent++
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()
@@ -582,6 +640,7 @@ class VideoSender(
         output.write(buildHeader(opcode, declaredLength))
         output.write(body)
         output.flush()
+        markSendProgress()
     }
 
     /** 按 00 00 00 01 / 00 00 01 起始码切分 AnnexB 码流为 NAL 列表。 */
@@ -618,6 +677,43 @@ class VideoSender(
         return units
     }
 
+    /**
+     * 接收端过载/停止消费时 TCP 写会一直阻塞；看门狗在连续 [STALL_TIMEOUT_MS]
+     * 没有任何成功写出后关闭 socket，让推流线程抛错并走 onEnded 恢复流程，
+     * 而不是让画面无限冻结（2026-11-01 诊断日志末尾类似现象）。
+     */
+    private fun startStallGuard() {
+        if (stallGuard != null) return
+        lastSendProgressAt = android.os.SystemClock.uptimeMillis()
+        stallGuard =
+            Thread(
+                {
+                    while (running.get()) {
+                        try {
+                            Thread.sleep(STALL_CHECK_MS)
+                        } catch (_: InterruptedException) {
+                            return@Thread
+                        }
+                        if (!running.get()) return@Thread
+                        val idle = android.os.SystemClock.uptimeMillis() - lastSendProgressAt
+                        if (idle >= STALL_TIMEOUT_MS) {
+                            log("VIDEO: 发送 ${idle}ms 无进展（接收端可能停止消费），主动断开以触发重连")
+                            lastSendProgressAt = android.os.SystemClock.uptimeMillis()
+                            runCatching { socket?.close() }
+                        }
+                    }
+                },
+                "video-stall-guard",
+            ).apply {
+                isDaemon = true
+                start()
+            }
+    }
+
+    private fun markSendProgress() {
+        lastSendProgressAt = android.os.SystemClock.uptimeMillis()
+    }
+
     companion object {
         private const val HEADER_LEN = 128
         private const val OP_FRAME = 0
@@ -625,6 +721,11 @@ class VideoSender(
         private const val OP_KEEP_ALIVE = 2
         private const val OP_KEEP_ALIVE_WITH_BODY = 5
         private const val TAG_SIZE = 16
+
+        /** 连续无成功写出的判定阈值（keepAlive 每秒都会写，正常不会触发）。 */
+        private const val STALL_TIMEOUT_MS = 10_000L
+
+        private const val STALL_CHECK_MS = 2_000L
 
         /** 每个长度前缀 NAL 的 4 字节大端长度字段。 */
         private const val LENGTH_PREFIX_SIZE = 4

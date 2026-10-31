@@ -15,6 +15,27 @@ import javax.crypto.Cipher
 
 class CarLifeProtocolTest {
     @Test
+    fun videoRequestCapsLongSideButKeepsReceiverAspect() {
+        // 低配车机：用「分辨率缩放」把请求长边压到 1280/960，宽高仍按车机比例取偶。
+        assertEquals(1280 to 720, CarLifeProtocol.videoRequestFor(1920, 1080, maxLongSide = 1280))
+        assertEquals(960 to 540, CarLifeProtocol.videoRequestFor(1920, 1080, maxLongSide = 960))
+        assertEquals(1280 to 480, CarLifeProtocol.videoRequestFor(1920, 720, maxLongSide = 1280))
+    }
+
+    @Test
+    fun videoRequestNeverUpscalesSmallReceiver() {
+        assertEquals(1024 to 576, CarLifeProtocol.videoRequestFor(1024, 576, maxLongSide = 1920))
+    }
+
+    @Test
+    fun videoInitPayloadCarriesRequestedFrameRate() {
+        val payload = CarLifeProtocol.videoInitPayload(width = 1280, height = 720, fps = 20)
+        assertEquals(1280, CarLifeProtocol.firstIntField(payload, 1))
+        assertEquals(720, CarLifeProtocol.firstIntField(payload, 2))
+        assertEquals(20, CarLifeProtocol.firstIntField(payload, 3))
+    }
+
+    @Test
     fun statisticsContainsAllSevenRequiredFieldsWithoutClaimingConnectionSuccess() {
         val payload = CarLifeProtocol.statisticsPayload()
         assertEquals("mcarplay-local", CarLifeProtocol.firstStringField(payload, 1))

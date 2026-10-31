@@ -10,6 +10,7 @@ import android.hardware.display.VirtualDisplay
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import com.mcarplay.app.compat.CompatibilityPrefs
 import com.mcarplay.app.launcher.settings.AppOrientationCompat
 import com.mcarplay.app.launcher.settings.DisplayPrefs
 import com.mcarplay.app.media.NotificationAccess
@@ -535,9 +536,14 @@ object VirtualLauncher {
         log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
+        val preferredFps = DisplayPrefs.fps(context)
         composer.targetFps =
-            DisplayPrefs
-                .fps(context)
+            if (CompatibilityPrefs.lowEndMode(context)) {
+                // 低配车机模式：合成器也限到 30fps（显示设置选了 60 也不例外）。
+                minOf(preferredFps, 30)
+            } else {
+                preferredFps
+            }
         this.composer = composer
         val displaysCreated = arrayOf(false)
         composer.onSurfacesReady = { dockSurface, appSurface, appHiSurface, mapSurface ->

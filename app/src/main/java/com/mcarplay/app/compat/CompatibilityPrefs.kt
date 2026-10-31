@@ -10,9 +10,29 @@ object CompatibilityPrefs {
     private const val PREFS = "settings"
     private const val KEY_PLAIN_FALLBACK = "compat_plain_fallback"
     private const val KEY_AUDIO_BASELINE = "compat_audio_baseline"
+    private const val KEY_LOW_END_MODE = "compat_low_end_mode"
 
     const val PLAIN_FALLBACK_DEFAULT = false
     const val AUDIO_BASELINE_DEFAULT = false
+    const val LOW_END_MODE_DEFAULT = false
+
+    /**
+     * 低配车机模式：向 CarWith 请求不超过 720p 的编码长边，合成器最高 30fps。
+     * 只影响下一次连接（编码尺寸在会话建立时定型）。
+     */
+    fun lowEndMode(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_LOW_END_MODE, LOW_END_MODE_DEFAULT)
+
+    fun setLowEndMode(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        context
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_LOW_END_MODE, enabled)
+            .apply()
+    }
 
     /** 配对失败（非 403）但 RTSP 连上过时，再试一次 et=NONE 明文会话。 */
     fun plainFallback(context: Context): Boolean =

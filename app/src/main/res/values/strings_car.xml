@@ -44,12 +44,15 @@
     <string name="sf_plain_off">已关闭：配对失败不再尝试明文</string>
     <string name="sf_audio_fallback_on">已开启：音频格式未声明时仍尝试（下次连接起效）</string>
     <string name="sf_audio_fallback_off">已关闭：未声明音频格式时只推视频</string>
+    <string name="sf_low_end_on">已开启低配车机模式：请求 720p/30fps；若 CarWith 仍推 1080p，请在 CarWith 设置→连接信息→分辨率 调整</string>
+    <string name="sf_low_end_off">已关闭低配车机模式</string>
     <string name="sf_scale_running">保存后下次连接起效；当前连接按 %1$d%% 运行</string>
     <string name="sf_scale_saved">分辨率 %1$d%% 已保存，下次连接起效</string>
     <string name="sf_duck_saved">导航时音乐压低到 %1$d dB</string>
     <string name="sf_duck_off">导航时不压低音乐</string>
     <string name="sf_fps_set">帧率已切换为 %1$dfps</string>
     <string name="sf_fps_live">帧率已切换为 %1$dfps（实时生效）</string>
+    <string name="sf_fps_capped_low_end">低配车机模式已开启，帧率按 30fps 运行</string>
     <string name="sf_throttle">触摸节流 %1$s</string>
     <string name="sm_desktop_desc">勾选的应用显示在车机桌面</string>
     <string name="sm_supersample_desc">竖屏应用渲染更精细，可三态调节</string>

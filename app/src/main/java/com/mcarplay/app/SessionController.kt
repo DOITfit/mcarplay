@@ -25,6 +25,7 @@ import com.mcarplay.app.carlife.CarLifeLauncher
 import com.mcarplay.app.carlife.CarLifeProtocol
 import com.mcarplay.app.carlife.CarLifeSession
 import com.mcarplay.app.carlife.CarLifeSessionRegistry
+import com.mcarplay.app.carlife.VideoQuality
 import com.mcarplay.app.carlife.mapCarLifeTouch
 import com.mcarplay.app.compat.CompatibilityPrefs
 import com.mcarplay.app.compat.ReceiverCompatibility
@@ -3059,6 +3060,7 @@ object SessionController {
                                 var pendingVideoW = 0
                                 var pendingVideoH = 0
                                 var pendingVideoDensity = 0
+                                var requestedVideoMaxLongSide = 1920
                                 var carLife: CarLifeSession? = null
                                 lateinit var sessionVideoSender: VideoSender
                                 if (host != null) {
@@ -3084,8 +3086,15 @@ object SessionController {
                                                 DisplayPrefs
                                                     .fps(it)
                                             } ?: 30
+                                    val lowEnd = appContext?.let(CompatibilityPrefs::lowEndMode) == true
+                                    // 低配车机模式：合成器最高 30fps，且编码请求长边不超过 720p。
+                                    val effectiveFps = if (lowEnd) minOf(fps, 30) else fps
                                     activeScalePercent = scalePct
-                                    activeTargetFps = fps
+                                    activeTargetFps = effectiveFps
+                                    // CarWith 按 HU 的 VIDEO_ENCODER_INIT 里的宽高决定编码尺寸
+                                    // （CarWith 4.0.23 的 CarlifeController.handleCustomResolution）。
+                                    // 同一「分辨率缩放」/低配模式约束请求的编码长边。
+                                    requestedVideoMaxLongSide = VideoQuality.maxLongSide(scalePct, lowEnd)
                                     // 车机触摸在通告视图坐标系（如 1160×540），流已按比例
                                     // 缩放（如 1450×674）——注入前需映射，否则点击漂移
                                     TouchRouter
@@ -3097,7 +3106,8 @@ object SessionController {
                                         )
                                     appendLog(
                                         "DISPLAY: 流 ${setup.displayWidth}x${setup.displayHeight} → " +
-                                            "${streamW}x$streamH（$scalePct%）@${fps}fps",
+                                            "${streamW}x$streamH（$scalePct%）@${effectiveFps}fps" +
+                                            if (lowEnd) "（低配车机模式）" else "",
                                     )
                                     pendingVideoW = streamW
                                     pendingVideoH = streamH
@@ -3121,7 +3131,7 @@ object SessionController {
                                             frameCipher = screen.cipher,
                                             width = streamW,
                                             height = streamH,
-                                            targetFps = fps,
+                                            targetFps = effectiveFps,
                                             log = { line -> appendLog(line) },
                                             keepAliveWithStats = setup.keepAliveSendStatsAsBody,
                                             externalVideoSource = carLifeSource,
@@ -3185,11 +3195,22 @@ object SessionController {
                                     val videoH = pendingVideoH
                                     val videoDensity = pendingVideoDensity
                                     val output = CarLifeOutput(diagnosticAttempt, sessionVideoSender)
-                                    // 按接收端屏幕比例请求，减少缩放/黑边；CarWith 不采纳时以其返回为准
+                                    // 按接收端屏幕比例请求，减少缩放/黑边；CarWith 不采纳时以其返回为准。
+                                    // 长边同时受「分辨率缩放」约束——低配车机调低即可减轻解码压力。
+                                    val requestedVideoSize =
+                                        CarLifeProtocol.videoRequestFor(
+                                            setup.displayWidth,
+                                            setup.displayHeight,
+                                            requestedVideoMaxLongSide,
+                                        )
+                                    appendLog(
+                                        "CARLIFE: 请求编码 ${requestedVideoSize.first}x${requestedVideoSize.second}" +
+                                            "（长边上限 $requestedVideoMaxLongSide；CarWith 实际帧率由 CarWith 设置决定）",
+                                    )
                                     val createdCarLife =
                                         newFormalCarLifeSession(
                                             context,
-                                            CarLifeProtocol.videoRequestFor(setup.displayWidth, setup.displayHeight),
+                                            requestedVideoSize,
                                         )
                                     carLife = createdCarLife
                                     val claimed = claimCarLifeSession(CarLifeSessionRegistry.Owner.FORMAL, createdCarLife)

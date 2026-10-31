@@ -20,7 +20,9 @@
     <string name="lay_not_playing">未在播放</string>
     <string name="lay_media_unavailable">媒体信息未连接</string>
     <string name="cd_bt_device">蓝牙设备</string>
-    <string name="lay_display_desc">视频流按车机分辨率的百分比生成虚拟屏与编码画面（逻辑布局不变）。分辨率改动下次连接起效；帧率为推流刷新频率，切换实时生效。</string>
+    <string name="lay_display_desc">视频流按车机分辨率的百分比生成虚拟屏与编码画面（逻辑布局不变），并约束向 CarWith 请求的编码分辨率；低配车机可调低以减轻解码压力。分辨率改动下次连接起效；帧率为推流刷新频率，切换实时生效（CarWith 实际帧率由 CarWith 自身设置决定）。</string>
+    <string name="lay_low_end_mode">低配车机模式</string>
+    <string name="lay_low_end_desc">向 CarWith 请求不超过 1280 长边的编码（约 720p），合成器最高 30fps；下次连接起效。CarWith 4.0.23 可能保留自身分辨率，若不生效请在 CarWith「设置→连接信息→分辨率」改为 1280×720。</string>
     <string name="lay_screen_off">连接时真息屏</string>
     <string name="lay_on">开</string>
     <string name="lay_off_short">关</string>

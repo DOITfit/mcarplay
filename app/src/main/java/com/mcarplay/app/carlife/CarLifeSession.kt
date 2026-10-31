@@ -225,12 +225,25 @@ class CarLifeSession(
             }
             videoWidth = format.width
             videoHeight = format.height
+            requestedVideoSize?.let { (requestW, requestH) ->
+                if (format.width.toLong() * format.height > requestW.toLong() * requestH) {
+                    log(
+                        "CARLIFE: CarWith 未采纳 ${requestW}x$requestH，实际 ${format.width}x${format.height}" +
+                            "——CarWith 4.0.23 会使用自身「设置→连接信息→分辨率」；" +
+                            "低配车机请在那里改为 1280×720 后重连，或调低 mcarplay「显示→分辨率缩放」",
+                    )
+                }
+            }
         }
     }
 
     private fun startChannelReader(channel: CarLifeChannel) {
         val activeConnector = connector ?: return
         thread(name = "carlife-read-${channel.name.lowercase()}", isDaemon = true) {
+            if (channel == CarLifeChannel.VIDEO) {
+                // 视频读取+解析直接决定首帧/帧间隔：按显示优先级调度，减少后台抢占。
+                runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+            }
             val socket = activeConnector.socket(channel) ?: return@thread
             try {
                 val input = socket.getInputStream()
@@ -267,13 +280,14 @@ class CarLifeSession(
                 frame.payload
             }
         videoParser.push(frame.timestamp.toLong() and 0xFFFF_FFFFL, payload).forEach { accessUnit ->
-            stats.record(accessUnit)
+            val frameCount = stats.record(accessUnit)
             accessUnit.dimensions()?.let { (width, height) ->
                 videoWidth = width
                 videoHeight = height
             }
-            val snapshot = stats.snapshot()
-            if (snapshot.frames == 1L || accessUnit.keyFrame) {
+            // Snapshot 只在需要打日志的帧分配：每帧都取会在视频热路径上白扔一个对象。
+            if (frameCount == 1L || accessUnit.keyFrame) {
+                val snapshot = stats.snapshot()
                 log("CARLIFE: 视频帧 #${snapshot.frames} ${videoInfo()} ${snapshot.summary()}")
             }
             onAccessUnit(accessUnit)

@@ -16,6 +16,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.LockSupport
 
 /**
  * 仪表盘卡片边距（流像素）——地图 tile 与音乐卡共用的契约值，四方统一引用：
@@ -82,6 +83,11 @@ class DualDisplayComposer(
     companion object {
         private const val TAG = "DualComposer"
         private const val EGL_RECORDABLE_ANDROID = 0x3142
+
+        /** 静止画面保底心跳（30fps）：编码器不能断粮。 */
+        private const val STATIC_FRAME_NANOS = 33_000_000L
+
+        private const val NANOS_PER_SECOND = 1_000_000_000L
 
         private const val TILE_CORNER_RADIUS = 24f
 
@@ -301,6 +307,10 @@ class DualDisplayComposer(
         mapW: Int,
         mapH: Int,
     ) {
+        // 合成/送编码器是实时路径：显示优先级降低被后台任务抢占造成的掉帧与首帧延迟。
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+        val composeThread = Thread.currentThread()
+
         // ---- EGL ----
         val display: EGLDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         checkEgl(display != EGL14.EGL_NO_DISPLAY, "eglGetDisplay")
@@ -364,7 +374,12 @@ class DualDisplayComposer(
             val st = SurfaceTexture(tex[0])
             st.setDefaultBufferSize(width, height)
             val input = Input(tex[0], st, Surface(st))
-            st.setOnFrameAvailableListener { input.hasNewFrame = true }
+            // 新帧到达立即唤醒合成线程：固定 8ms 轮询在 60fps 下最坏多等 8ms，
+            // 叠加调度抖动会把 60fps 档压到 ~40fps，必须由事件驱动。
+            st.setOnFrameAvailableListener {
+                input.hasNewFrame = true
+                LockSupport.unpark(composeThread)
+            }
             return input
         }
 
@@ -387,6 +402,10 @@ class DualDisplayComposer(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
 
         val matrix = FloatArray(16)
+        // 每帧多次绘制复用同一组顶点缓冲：旧实现每次绘制都新建 direct buffer，
+        // 60fps 下每秒上百次 native 分配，既费 CPU 也增加 GC 抖动。
+        val vertexBuffer = directFloatBuffer(8)
+        val texCoordBuffer = directFloatBuffer(8)
 
         // ---- 叠加卡片着色器（普通 2D 纹理；Bitmap 由 Canvas 预排版）----
         val overlayProgram = buildProgram(oes = false)
@@ -444,7 +463,7 @@ class DualDisplayComposer(
             val yTop = outHeight - top
             val yBottom = outHeight - bottom
             val positions =
-                floatBuffer(
+                vertexBuffer.fill8(
                     px(left),
                     py(yBottom),
                     px(right),
@@ -455,7 +474,7 @@ class DualDisplayComposer(
                     py(yTop),
                 )
             // Bitmap v=0 在顶部：底部顶点取 v=1，顶部顶点取 v=0
-            val coords = floatBuffer(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
+            val coords = texCoordBuffer.fill8(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
             GLES20.glVertexAttribPointer(oaPos, 2, GLES20.GL_FLOAT, false, 0, positions)
             GLES20.glEnableVertexAttribArray(oaPos)
             GLES20.glVertexAttribPointer(oaTexCoord, 2, GLES20.GL_FLOAT, false, 0, coords)
@@ -498,7 +517,7 @@ class DualDisplayComposer(
 
             fun py(v: Float) = v / outHeight * 2f - 1f
             val positions =
-                floatBuffer(
+                vertexBuffer.fill8(
                     px(x0),
                     py(y0),
                     px(x1),
@@ -508,7 +527,7 @@ class DualDisplayComposer(
                     px(x1),
                     py(y1),
                 )
-            val coords = floatBuffer(u0, 0f, u1, 0f, u0, 1f, u1, 1f)
+            val coords = texCoordBuffer.fill8(u0, 0f, u1, 0f, u0, 1f, u1, 1f)
             GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, positions)
             GLES20.glEnableVertexAttribArray(aPos)
             GLES20.glVertexAttribPointer(aTexCoord, 2, GLES20.GL_FLOAT, false, 0, coords)
@@ -690,7 +709,7 @@ class DualDisplayComposer(
         // 否则编码器无输入、视频流停摆，接收端画面冻结（表现为"桌面卡死/不可交互"，
         // 2026-10-09 实测踩坑：触摸其实送到了，只是没有帧能反映出来）。
         try {
-            var lastComposeAt = System.currentTimeMillis()
+            var lastComposeNanos = System.nanoTime()
             while (running.get()) {
                 // 快车道（60fps 节流）只由「会被画进输出画面」的输入驱动：
                 // dock + 当前活动应用屏（app/hi 二选一）+ tile 可见时的地图屏。
@@ -704,16 +723,23 @@ class DualDisplayComposer(
                         dock.hasNewFrame ||
                         (if (activeAppHi) appHi else app)?.hasNewFrame == true ||
                         (tileLayout != TileLayout.HIDDEN && mapInput?.hasNewFrame == true)
-                val now = System.currentTimeMillis()
-                val intervalMs = if (hasNew) 1000L / targetFps.coerceIn(1, 120) else 33L
-                if (now - lastComposeAt >= intervalMs) {
+                val now = System.nanoTime()
+                val intervalNanos =
+                    if (hasNew) {
+                        NANOS_PER_SECOND / targetFps.coerceIn(1, 120)
+                    } else {
+                        STATIC_FRAME_NANOS
+                    }
+                val waitNanos = lastComposeNanos + intervalNanos - now
+                if (waitNanos <= 0) {
                     composeFrame(fullRedraw = false)
-                    lastComposeAt = now
+                    lastComposeNanos = now
                 } else {
-                    Thread.sleep(8)
+                    // 新帧回调会 unpark：精确睡到下一帧时隙，而不是固定 8ms 轮询
+                    // （8ms 轮询 + 16ms 节流最坏叠加成 24ms，把 60fps 拖到 ~40fps）。
+                    LockSupport.parkNanos(waitNanos)
                 }
             }
-        } catch (_: InterruptedException) {
         } finally {
             if (overlayTexture != 0) {
                 runCatching { GLES20.glDeleteTextures(1, intArrayOf(overlayTexture), 0) }
@@ -814,15 +840,36 @@ class DualDisplayComposer(
         return program
     }
 
-    private fun floatBuffer(vararg values: Float): FloatBuffer =
+    /** 复用的 direct 顶点缓冲；数据在 glDrawArrays 时被消费，可跨绘制复用。 */
+    private fun directFloatBuffer(size: Int): FloatBuffer =
         ByteBuffer
-            .allocateDirect(values.size * 4)
+            .allocateDirect(size * 4)
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
-            .apply {
-                put(values)
-                position(0)
-            }
+
+    /** 写入 4 个顶点（8 个 float），不产生临时数组或 direct buffer。 */
+    private fun FloatBuffer.fill8(
+        v0: Float,
+        v1: Float,
+        v2: Float,
+        v3: Float,
+        v4: Float,
+        v5: Float,
+        v6: Float,
+        v7: Float,
+    ): FloatBuffer =
+        apply {
+            clear()
+            put(v0)
+                .put(v1)
+                .put(v2)
+                .put(v3)
+                .put(v4)
+                .put(v5)
+                .put(v6)
+                .put(v7)
+            position(0)
+        }
 
     private fun checkEgl(
         ok: Boolean,

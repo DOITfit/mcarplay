@@ -17,13 +17,15 @@ class CarLifeVideoStats {
     private var firstTimestamp: Long? = null
     private var lastTimestamp: Long? = null
 
+    /** Records one unit and returns the new frame count (callers log on first/key frames). */
     @Synchronized
-    fun record(accessUnit: CarLifeVideoAccessUnit) {
+    fun record(accessUnit: CarLifeVideoAccessUnit): Long {
         frames++
         if (accessUnit.keyFrame) keyFrames++
         bytes += accessUnit.data.size
         if (firstTimestamp == null) firstTimestamp = accessUnit.timestamp
         lastTimestamp = accessUnit.timestamp
+        return frames
     }
 
     @Synchronized

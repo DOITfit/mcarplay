@@ -20,7 +20,9 @@
     <string name="lay_not_playing">Not playing</string>
     <string name="lay_media_unavailable">Media info not connected</string>
     <string name="cd_bt_device">Bluetooth device</string>
-    <string name="lay_display_desc">The video stream renders the virtual display and encoded picture at a percentage of the head-unit resolution (the logical layout is unchanged). Resolution changes apply on the next connection; frame rate is the streaming refresh rate and applies immediately.</string>
+    <string name="lay_display_desc">The video stream renders the virtual display and encoded picture at a percentage of the head-unit resolution (the logical layout is unchanged), and caps the resolution requested from CarWith; lower it on low-end receivers to reduce decoding load. Resolution changes apply on the next connection; frame rate is the streaming refresh rate and applies immediately (CarWith\'s actual encode rate is set in CarWith).</string>
+    <string name="lay_low_end_mode">Low-end head unit mode</string>
+    <string name="lay_low_end_desc">Request CarWith to encode at most a 1280-pixel long side (about 720p) and cap the compositor at 30fps; applies on the next connection. CarWith 4.0.23 may keep its own resolution; if the request is ignored, set 1280x720 under CarWith Settings → Connection info → Resolution.</string>
     <string name="lay_screen_off">Turn the panel off while connected</string>
     <string name="lay_on">On</string>
     <string name="lay_off_short">Off</string>

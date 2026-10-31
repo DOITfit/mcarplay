@@ -12,8 +12,14 @@ import android.provider.Settings
 /** Uses ordinary intents to open CarWith's exported settings or compatibility entry. */
 object CarLifeLauncher {
     const val CARWITH_PACKAGE = "com.miui.carlink"
+
+    /**
+     * CarWith 的「连接信息」设置页（exported）。它同时提供**分辨率**、CarWith 自身帧率和
+     * 屏幕校正入口；比直接进 UCarScreenSettingsActivity 更能解决「CarWith 不采纳
+     * VIDEO_ENCODER_INIT 请求」的问题（2026-11-01 诊断日志：请求 1280×720，实际 1920×1080）。
+     */
     const val CARWITH_SETTINGS =
-        "com.carwith.launcher.settings.phone.UCarScreenSettingsActivity"
+        "com.carwith.launcher.settings.phone.UCarConnectInfoActivity"
     const val CARWITH_ENTRY =
         "com.miui.carlink.castfwk.usb.CarlifeAdbActivity"
     const val CARLIFE_PACKAGE = "com.baidu.carlife.xiaomi"

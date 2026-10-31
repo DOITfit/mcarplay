@@ -300,6 +300,7 @@ class AudioSender(
 
             Thread(
                 {
+                    runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
                     try {
                         recorder.startRecording()
                     } catch (error: Exception) {
@@ -383,6 +384,9 @@ class AudioSender(
             startSyncLoop()
             Thread(
                 {
+                    // 音频发包是硬实时：优先级不足时一次调度延迟就会让 pacer 跳过整秒
+                    // （日志中的“外部 PCM 发送线程落后过多，跳过 49 帧”）。
+                    runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
                     try {
                         runExternalLoop()
                     } catch (_: InterruptedException) {
