@@ -47,6 +47,12 @@ See [Apache-2.0.txt](docs/licenses/Apache-2.0.txt) for the Apache license text.
 JUnit and JSON-java are test dependencies. Python cryptography is used by the
 diagnostic probe and is not an Android runtime library.
 
+## Ported implementation
+
+| Project | License | What was ported |
+| --- | --- | --- |
+| [CarPToCarL](https://github.com/jjuugk/CarPToCarL) | [MIT](docs/licenses/CarPToCarL-MIT.txt) | The Bluetooth-ACL "approach" auto-start policy and receiver behavior (CarApproachPrefs, CarApproachPolicy, CarApproachReceiver): only listen to system ACL events, throttle retriggers, suppress after a manual stop, and bring the Activity forward so the full pipeline can start. Adapted to mcarplay's CarWith/CarLife session and target-device code. |
+
 ## Receiver and protocol research
 
 - [DiPlay](https://github.com/shihabal3amri/DiPlay): bench-test receiver; see its

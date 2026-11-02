@@ -3,8 +3,9 @@ mcarplay
 This project builds upon CarDeck:
 https://github.com/shaonialife/cardeck
 
-Upstream copyright notice, retained unchanged:
-Copyright (c) 2026 lizhihua
+Upstream copyright notices, retained unchanged:
+Copyright (c) 2026 lizhihua (CarDeck)
+Copyright (c) 2026 lizhihua (CarPToCarL; approach auto-start logic only)
 
 The upstream MIT license is preserved in LICENSE and
 docs/licenses/CarDeck-MIT.txt.
