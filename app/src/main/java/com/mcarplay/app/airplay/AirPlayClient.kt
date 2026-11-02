@@ -3,6 +3,7 @@ package com.mcarplay.app.airplay
 import android.content.Context
 import android.os.SystemClock
 import com.mcarplay.app.audio.AudioCodec
+import com.mcarplay.app.audio.AudioOutputPrefs
 import com.mcarplay.app.audio.AudioProfile
 import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
@@ -1186,6 +1187,9 @@ class AirPlayClient(
 
         fun startReading() {
             Thread({
+                // 输入/事件通道承载触摸 HID：提高到 DISPLAY 优先级，避免普通后台线程被
+                // 视频/音频线程抢占造成拖拽跟手抖动（只影响读/解析，不改变协议）。
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY)
                 val input = socket.getInputStream()
                 var pending = ByteArray(0)
                 var plaintext = ByteArray(0)
@@ -1620,6 +1624,9 @@ class AirPlayClient(
          * catplay 注释：AirPlay 推流最低 250ms 才稳定（clamp 32..2000）——兜底取 250。
          */
         const val AUDIO_LATENCY_FALLBACK_MS = 250L
+
+        /** 低延迟实验档的音频缓冲下限。 */
+        const val AUDIO_LATENCY_LOW_MS = 100L
 
         /** 车机音量 ≤ 这个值（dB）视为静音位（AirPlay 里 -144 约等于全静音）。 */
         private const val MUTE_THRESHOLD_DB = -100f
@@ -2070,8 +2077,14 @@ class AirPlayClient(
                 ?.let { it / 1000 }
         // 下限 250ms：车机声明的 outputLatencyMicros 只是它自己的输出延迟（实测 35ms），
         // 拿它当端到端缓冲会让 WiFi 抖动直接变成欠载。catplay 对 AirPlay 镜像同样是
-        // `max(声明值, 250ms)`。
-        return declaredMs?.coerceAtLeast(AUDIO_LATENCY_FALLBACK_MS) ?: AUDIO_LATENCY_FALLBACK_MS
+        // `max(声明值, 250ms)`。低延迟实验档降到 100ms，代价是抖动时可能欠载断音。
+        val floor =
+            if (context != null && AudioOutputPrefs.lowLatency(context)) {
+                AUDIO_LATENCY_LOW_MS
+            } else {
+                AUDIO_LATENCY_FALLBACK_MS
+            }
+        return declaredMs?.coerceAtLeast(floor) ?: floor
     }
 
     /**
@@ -2245,6 +2258,9 @@ class AirPlayClient(
                 }
             registerEventCommandChannel(socket, cipher)
             Thread({
+                // 输入/事件通道承载触摸 HID：提高到 DISPLAY 优先级，避免普通后台线程被
+                // 视频/音频线程抢占造成拖拽跟手抖动（只影响读/解析，不改变协议）。
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY)
                 val input = socket.getInputStream()
                 val accumulator = RtspAccumulator()
                 var pending = ByteArray(0)

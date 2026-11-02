@@ -8,11 +8,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Bridges CarLife's native PCM into an already-negotiated CarPlay audio
- * stream. The queue decouples CarLife's socket thread from RTP pacing.
+ * Bridges CarLife's native PCM into a [PcmSink]: the already-negotiated CarPlay
+ * audio stream, or the car's Bluetooth A2DP output. The queue decouples
+ * CarLife's socket thread from the sink's pacing.
  */
 class CarLifeAudioBridge(
-    private val sender: AudioSender,
+    private val sink: PcmSink,
     private val targetSampleRate: Int,
     private val ducking: AudioDuckingConfig = AudioDuckingConfig(),
     private val log: (String) -> Unit,
@@ -23,9 +24,14 @@ class CarLifeAudioBridge(
     private var accepted = 0L
     private var dropped = 0L
 
-    fun start() {
-        if (!running.compareAndSet(false, true)) return
-        sender.startExternalSource()
+    /** 返回 false 表示输出端不可用（调用方应回退到另一条音频链路）。 */
+    fun start(): Boolean {
+        if (!running.compareAndSet(false, true)) return false
+        if (!sink.startSink()) {
+            running.set(false)
+            log("AUDIO: 音频输出端启动失败")
+            return false
+        }
         val worker =
             Thread(
                 {
@@ -43,7 +49,7 @@ class CarLifeAudioBridge(
                         Thread.currentThread().interrupt()
                     } finally {
                         mixer.reset()
-                        sender.stopExternalSource()
+                        sink.stopSink()
                     }
                 },
                 "carlife-audio-bridge",
@@ -51,6 +57,7 @@ class CarLifeAudioBridge(
         worker.isDaemon = true
         thread = worker
         worker.start()
+        return true
     }
 
     /** 会话中调整提示期间的音乐压低幅度；由工作线程在下一次处理时应用。 */
@@ -144,7 +151,7 @@ class CarLifeAudioBridge(
     }
 
     private fun emit(pcm: ByteArray) {
-        if (pcm.isNotEmpty()) sender.submitExternalPcm(pcm)
+        if (pcm.isNotEmpty()) sink.submitPcm(pcm)
     }
 
     fun stop() {

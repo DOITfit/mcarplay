@@ -62,7 +62,13 @@ class AudioSender(
      */
     private val controlPort: Int = 0,
     private val onPacketSent: (() -> Unit)? = null,
-) {
+) : PcmSink {
+    override fun startSink(): Boolean = startExternalSource()
+
+    override fun submitPcm(pcm: ByteArray) = submitExternalPcm(pcm)
+
+    override fun stopSink() = stopExternalSource()
+
     companion object {
         const val CHANNELS = 2
 
