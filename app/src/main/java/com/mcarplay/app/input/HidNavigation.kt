@@ -52,15 +52,19 @@ object HidNavigation {
         uuid: String,
         descriptor: ByteArray?,
         report: ByteArray,
+        /** 预先解析好的导航设备判定；null 表示调用方未缓存，现场判定。 */
+        navigationDevice: Boolean? = null,
     ): List<Int> {
         if (report.isEmpty()) return emptyList()
-        val nav = isNavigationDevice(descriptor) || (descriptor == null && report.size in 2..4)
+        val nav =
+            navigationDevice
+                ?: (isNavigationDevice(descriptor) || (descriptor == null && report.size in 2..4))
         if (!nav) return emptyList()
         if (rawLogEnabled) {
             android.util.Log.i(
                 "mcarplay-HID",
                 "HID-RAW uuid=$uuid bytes=" + report.joinToString(" ") { "%02X".format(it) } +
-                    " nav=${isNavigationDevice(descriptor)}",
+                    " nav=$nav",
             )
         }
         return if (descriptor != null && hasUsage(descriptor, USAGE_HAT_SWITCH) && report.size == 1) {

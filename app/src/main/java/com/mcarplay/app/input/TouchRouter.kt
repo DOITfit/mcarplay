@@ -55,6 +55,15 @@ object TouchRouter {
     @Volatile
     private var throttleInited = false
 
+    /**
+     * 会话级节流：低配车机模式在用户未显式设置节流时用 12ms，
+     * 减少送去车机的 HID move 报文数量。每次会话建立时由 SessionController 调用。
+     */
+    fun setSessionThrottle(ms: Long) {
+        moveThrottleMs = ms.coerceAtLeast(0L)
+        throttleInited = true
+    }
+
     private var lastInjectAt = 0L
     private var throttledCount = 0
     private var lastThrottleLogAt = 0L
