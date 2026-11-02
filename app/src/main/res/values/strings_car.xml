@@ -46,6 +46,12 @@
     <string name="sf_audio_fallback_off">已关闭：未声明音频格式时只推视频</string>
     <string name="sf_low_end_on">已开启低配车机模式：请求 720p/30fps；若 CarWith 仍推 1080p，请在 CarWith 设置→连接信息→分辨率 调整</string>
     <string name="sf_low_end_off">已关闭低配车机模式</string>
+    <string name="sf_bt_audio_on">已开启：CarWith 声音下次连接走车机蓝牙 A2DP（需车机保持 A2DP）</string>
+    <string name="sf_bt_audio_off">已关闭：声音回退 AirPlay</string>
+    <string name="sf_background_on">已开启后台连接：不拉起 CarWith，需保持 CarWith 会话在后台</string>
+    <string name="sf_background_off">已关闭后台连接：需要时仍会拉起 CarWith</string>
+    <string name="sf_low_latency_on">已开启低延迟音频：AirPlay 音频缓冲 100ms（Wi-Fi 抖动可能断音）</string>
+    <string name="sf_low_latency_off">已关闭低延迟音频：恢复 250ms 缓冲</string>
     <string name="sf_scale_running">保存后下次连接起效；当前连接按 %1$d%% 运行</string>
     <string name="sf_scale_saved">分辨率 %1$d%% 已保存，下次连接起效</string>
     <string name="sf_duck_saved">导航时音乐压低到 %1$d dB</string>
@@ -62,4 +68,7 @@
     <string name="sm_display_desc">流分辨率缩放、目标帧率与导航时音乐音量</string>
     <string name="sr_on_home">在桌面的应用（%1$d）</string>
     <string name="sr_off_home">不在桌面的应用（%1$d）</string>
+    <string name="sf_car_approach_on">已开启靠近自动启动</string>
+    <string name="sf_car_approach_off">已关闭靠近自动启动</string>
+    <string name="sf_car_approach_no_target">已开启靠近自动启动，但还没选择目标车机；请先选定目标</string>
 </resources>

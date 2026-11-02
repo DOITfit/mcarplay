@@ -91,7 +91,16 @@
     <string name="ma_bt_target_gone">目标「%1$s」已不在配对列表——请重新选择设备</string>
     <string name="ma_audio_enabled">已开启</string>
     <string name="ma_audio_on">开启</string>
+    <string name="main_auto_connect_title">自动连接</string>
+    <string name="main_bt_audio_title">声音输出到车机蓝牙</string>
+    <string name="main_bt_audio_desc">开启后 CarWith 原生声音走车机蓝牙 A2DP，CarPlay 仅推视频；需车机在会话期间保持 A2DP。</string>
+    <string name="main_bt_audio_desc_on">已开启：CarWith 声音走车机蓝牙 A2DP，CarPlay 仅推视频。</string>
+    <string name="main_car_approach_title">靠近车机自动启动</string>
+    <string name="main_car_approach_desc">目标车机蓝牙回连时自动打开 App 并连接（只听系统 ACL，不扫描、不轮询）。</string>
+    <string name="ma_bt_audio_toggle_on">车机蓝牙输出已开启：下次连接需选择「开启声音」，且车机保持 A2DP</string>
+    <string name="ma_bt_audio_toggle_off">车机蓝牙输出已关闭，声音回退 AirPlay</string>
     <string name="ma_audio_carwith_desc">使用 CarWith 原生声音 · 无需额外录屏授权</string>
+    <string name="ma_audio_carwith_bt_desc">CarWith 原生声音 · 车机蓝牙 A2DP 输出（需车机保持 A2DP）</string>
     <string name="ma_audio_granted">已授权</string>
     <string name="ma_audio_projection_ready">投屏权限已就绪 · 连接时可选开启</string>
     <string name="ma_badge_not_set">未设置</string>

@@ -46,6 +46,12 @@
     <string name="sf_audio_fallback_off">Off: video only when no audio format is declared</string>
     <string name="sf_low_end_on">Low-end mode on: requests 720p/30fps; if CarWith still sends 1080p, set it under CarWith Settings → Connection info → Resolution</string>
     <string name="sf_low_end_off">Low-end mode off</string>
+    <string name="sf_bt_audio_on">On: CarWith sound uses car Bluetooth A2DP on the next connection (A2DP must stay connected)</string>
+    <string name="sf_bt_audio_off">Off: sound falls back to AirPlay</string>
+    <string name="sf_background_on">Background connect on: CarWith is not opened; keep its session running in the background</string>
+    <string name="sf_background_off">Background connect off: CarWith may be opened when needed</string>
+    <string name="sf_low_latency_on">Low-latency audio on: AirPlay buffer 100ms (jitter may cause dropouts)</string>
+    <string name="sf_low_latency_off">Low-latency audio off: 250ms buffer restored</string>
     <string name="sf_scale_running">Applies on the next connection; the current one runs at %1$d%%</string>
     <string name="sf_scale_saved">Resolution %1$d%% saved; applies on the next connection</string>
     <string name="sf_duck_saved">Music lowered to %1$d dB during navigation</string>
@@ -62,4 +68,7 @@
     <string name="sm_display_desc">Stream resolution scale, target frame rate and music volume during navigation</string>
     <string name="sr_on_home">On home (%1$d)</string>
     <string name="sr_off_home">Not on home (%1$d)</string>
+    <string name="sf_car_approach_on">Approach auto-start on</string>
+    <string name="sf_car_approach_off">Approach auto-start off</string>
+    <string name="sf_car_approach_no_target">Approach auto-start is on, but no target car is selected; choose one first</string>
 </resources>

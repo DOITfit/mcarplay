@@ -136,6 +136,59 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:text="@string/lay_proximity_start"
+            android:textColor="#FFF5F5F7"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_segment"
+            android:orientation="horizontal"
+            android:padding="3dp">
+
+            <TextView
+                android:id="@+id/btnProximityOn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_on"
+                android:textColor="#FF8E8E93"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnProximityOff"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2dp"
+                android:background="@drawable/bg_segment_sel"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_off_short"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/lay_proximity_start_desc"
+            android:textColor="#FF8E8E93"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:text="@string/lay_hid_raw"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
@@ -236,6 +289,165 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:text="@string/lay_low_end_desc"
+            android:textColor="#FF8E8E93"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/lay_bt_audio"
+            android:textColor="#FFF5F5F7"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_segment"
+            android:orientation="horizontal"
+            android:padding="3dp">
+
+            <TextView
+                android:id="@+id/btnBtAudioOn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_on"
+                android:textColor="#FF8E8E93"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnBtAudioOff"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2dp"
+                android:background="@drawable/bg_segment_sel"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_off_short"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/lay_bt_audio_desc"
+            android:textColor="#FF8E8E93"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/lay_background_connect"
+            android:textColor="#FFF5F5F7"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_segment"
+            android:orientation="horizontal"
+            android:padding="3dp">
+
+            <TextView
+                android:id="@+id/btnBackgroundOn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_on"
+                android:textColor="#FF8E8E93"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnBackgroundOff"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2dp"
+                android:background="@drawable/bg_segment_sel"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_off_short"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/lay_background_connect_desc"
+            android:textColor="#FF8E8E93"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/lay_low_latency_audio"
+            android:textColor="#FFF5F5F7"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_segment"
+            android:orientation="horizontal"
+            android:padding="3dp">
+
+            <TextView
+                android:id="@+id/btnLowLatencyOn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_on"
+                android:textColor="#FF8E8E93"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnLowLatencyOff"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2dp"
+                android:background="@drawable/bg_segment_sel"
+                android:paddingLeft="18dp"
+                android:paddingTop="6dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="6dp"
+                android:text="@string/lay_off_short"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/lay_low_latency_audio_desc"
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 

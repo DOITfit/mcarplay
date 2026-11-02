@@ -27,6 +27,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
+import com.mcarplay.app.audio.AudioOutputPrefs
+import com.mcarplay.app.bt.AppUiPresence
+import com.mcarplay.app.bt.AutoConnectPrefs
+import com.mcarplay.app.bt.CarApproachPrefs
+import com.mcarplay.app.bt.EXTRA_CAR_APPROACH
 import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.carlife.CarLifeDiagnostics
 import com.mcarplay.app.carlife.CarLifeLauncher
@@ -106,6 +111,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPickTarget: TextView
     private lateinit var audioDesc: TextView
     private lateinit var btnAudio: TextView
+    private lateinit var rowBtAudio: View
+    private lateinit var switchBtAudio: androidx.appcompat.widget.SwitchCompat
+    private lateinit var btAudioDesc: TextView
+    private lateinit var rowCarApproach: View
+    private lateinit var switchCarApproach: androidx.appcompat.widget.SwitchCompat
+    private lateinit var carApproachDesc: TextView
     private lateinit var carLifeSelfTestDesc: TextView
     private lateinit var btnCarLifeSelfTest: TextView
     private lateinit var externalHuDesc: TextView
@@ -130,6 +141,12 @@ class MainActivity : AppCompatActivity() {
     // 记在 pendingResidualDisplays，状态旁的「清理残留屏」按钮可再次发起
     private var startupCheckRunning = false
     private var pendingResidualDisplays: List<Pair<Int, String>>? = null
+
+    /** 冷启动/靠近拉起后待发起的自动连接；前置条件不齐时保留，由对应时机继续。 */
+    private var autoConnectRequested = false
+
+    /** 本次是「靠近车机」拉起的（决定是否解除抑制、是否静默退后台）。 */
+    private var launchedByApproach = false
 
     // 英雄卡实时帧率：1s 轮询对 VideoSender 已发帧计数取差值
     private var lastSentFrames = 0L
@@ -301,6 +318,8 @@ class MainActivity : AppCompatActivity() {
                         // connectCancelled 一起让 autoJoin 流程立即中止）
                         wifiJoinDialog?.cancel()
                         wifiJoinDialog = null
+                        // 用户主动取消：抑制「靠近车机」的自动拉起，避免取消后立刻又被唤起。
+                        CarApproachPrefs.setSuppressed(this, true)
                         SessionController.cancelConnecting(this)
                     },
                 ),
@@ -479,6 +498,7 @@ class MainActivity : AppCompatActivity() {
                 listOf(
                     DarkMessageDialog.Action(getString(R.string.action_cancel)) {},
                     DarkMessageDialog.Action(getString(R.string.ma_disconnect), DarkMessageDialog.Emphasis.DANGER) {
+                        CarApproachPrefs.setSuppressed(this, true)
                         SessionController.disconnect(this)
                     },
                 ),
@@ -705,6 +725,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        launchedByApproach = intent?.getBooleanExtra(EXTRA_CAR_APPROACH, false) == true
         // 旋转/重建：沿用原倒计时截止时刻（onResume 据此续弹）
         disclaimerDeadlineAt = savedInstanceState?.getLong(KEY_DISCLAIMER_DEADLINE, 0L) ?: 0L
 
@@ -739,6 +760,12 @@ class MainActivity : AppCompatActivity() {
         btnPickTarget = findViewById(R.id.btnPickTarget)
         audioDesc = findViewById(R.id.audioDesc)
         btnAudio = findViewById(R.id.btnAudio)
+        rowBtAudio = findViewById(R.id.rowBtAudio)
+        switchBtAudio = findViewById(R.id.switchBtAudio)
+        btAudioDesc = findViewById(R.id.btAudioDesc)
+        rowCarApproach = findViewById(R.id.rowCarApproach)
+        switchCarApproach = findViewById(R.id.switchCarApproach)
+        carApproachDesc = findViewById(R.id.carApproachDesc)
         carLifeSelfTestDesc = findViewById(R.id.carLifeSelfTestDesc)
         btnCarLifeSelfTest = findViewById(R.id.btnCarLifeSelfTest)
         externalHuDesc = findViewById(R.id.externalHuDesc)
@@ -882,6 +909,61 @@ class MainActivity : AppCompatActivity() {
         } else {
             maybeShowWhatsNew()
         }
+
+        // 用户自己打开 App = 明确想用：解除「刚手动断开过」的抑制。
+        // 靠近拉起的那一轮不解除，避免自己解除自己的防抖。
+        if (!launchedByApproach && CarApproachPrefs.suppressed(this)) {
+            CarApproachPrefs.setSuppressed(this, false)
+            log("APPROACH: 用户主动打开 App——已解除「刚断开过」的抑制")
+        }
+        if (savedInstanceState == null || launchedByApproach) {
+            autoConnectRequested = true
+            if (launchedByApproach) {
+                log("APPROACH: 检测到目标车机靠近，App 已被自动拉起——由前台发起连接")
+                intent?.removeExtra(EXTRA_CAR_APPROACH)
+            }
+            mainHandler.postDelayed({ maybeAutoConnect() }, 700L)
+        }
+    }
+
+    /**
+     * 启动后/靠近后自动连接。
+     *
+     * 前置条件不齐（免责声明、启动残留扫描、已有会话）时保留请求，由对应时机再调。
+     * 走与手动点「启动连接」相同的链路，[SessionController.startConnection] 幂等。
+     */
+    private fun maybeAutoConnect() {
+        if (!autoConnectRequested || isFinishing || isDestroyed) return
+        if (!AutoConnectPrefs.enabled(this)) {
+            autoConnectRequested = false
+            log("AUTOCONNECT: 已关闭——等待手动点「启动连接」")
+            return
+        }
+        if (!com.mcarplay.app.legal.DisclaimerPrefs
+                .hasAcceptedCurrent(this)
+        ) {
+            return
+        }
+        if (startupCheckRunning || pendingResidualDisplays != null) return
+        if (SessionController.isSessionRunning() || SessionController.sessionStarting.get()) return
+        if (heroState != null && heroState != HeroState.IDLE) return
+
+        autoConnectRequested = false
+        val withAudio = CarLifeLauncher.isAvailable(this) || CarPlayService.mediaProjection != null
+        log("AUTOCONNECT: 打开 App/靠近车机即自动发起连接（音频=${if (withAudio) "开" else "关"}）")
+        ensureBluetoothReady { beginWithAudio(enabled = withAudio) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_CAR_APPROACH, false)) {
+            setIntent(intent)
+            launchedByApproach = true
+            autoConnectRequested = true
+            log("APPROACH: App 已在后台，重新武装自动连接")
+            intent.removeExtra(EXTRA_CAR_APPROACH)
+            mainHandler.postDelayed({ maybeAutoConnect() }, 300L)
+        }
     }
 
     /**
@@ -949,7 +1031,10 @@ class MainActivity : AppCompatActivity() {
                     },
                     onDismiss = {
                         activeDisclaimer = null
-                        if (DisclaimerPrefs.hasAcceptedCurrent(this)) maybeShowWhatsNew()
+                        if (DisclaimerPrefs.hasAcceptedCurrent(this)) {
+                            maybeShowWhatsNew()
+                            mainHandler.postDelayed({ maybeAutoConnect() }, 400L)
+                        }
                     },
                 )
     }
@@ -1075,6 +1160,30 @@ class MainActivity : AppCompatActivity() {
 
         // 目标车机选择：配对了多台车机时指定唯一目标（只向它发请求/只接受它连入）
         btnPickTarget.setOnClickListener { showTargetPicker() }
+
+        // 首页开关：声音输出到车机蓝牙（AirPlay ↔ A2DP）
+        switchBtAudio.isChecked = AudioOutputPrefs.bluetooth(this)
+        switchBtAudio.setOnCheckedChangeListener { _, checked ->
+            AudioOutputPrefs.setBluetooth(this, checked)
+            refreshBtAudioSwitch()
+            snack(getString(if (checked) R.string.ma_bt_audio_toggle_on else R.string.ma_bt_audio_toggle_off))
+        }
+        // 首页开关：靠近车机自动启动（只监听系统 ACL）
+        switchCarApproach.isChecked = CarApproachPrefs.enabled(this)
+        switchCarApproach.setOnCheckedChangeListener { _, checked ->
+            CarApproachPrefs.setEnabled(this, checked)
+            refreshCarApproachSwitch()
+            val noTarget = checked && TargetDevicePrefs.get(this) == null
+            snack(
+                getString(
+                    when {
+                        noTarget -> R.string.sf_car_approach_no_target
+                        checked -> R.string.sf_car_approach_on
+                        else -> R.string.sf_car_approach_off
+                    },
+                ),
+            )
+        }
 
         // 车机侧声音授权（原「申请投屏权限」）：RECORD_AUDIO + MediaProjection 一起请求
         btnAudio.setOnClickListener {
@@ -1458,6 +1567,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         ctaIcon.rotation = 0f
+        if (s == HeroState.IDLE) mainHandler.post { maybeAutoConnect() }
     }
 
     /** 英雄卡主操作按钮统一样式（三个状态仅风格/图标/文案不同）。 */
@@ -1503,6 +1613,30 @@ class MainActivity : AppCompatActivity() {
         DrawableCompat.setTint(icon.mutate(), getColor(if (on) R.color.m3_ok else R.color.m3_outline))
         audioTag.setCompoundDrawablesWithIntrinsicBounds(icon, null, null, null)
         audioTag.text = getString(if (on) R.string.main_audio_tag_on else R.string.ma_audio_tag_off)
+    }
+
+    /** 首页「声音输出到车机蓝牙」开关状态；下次连接生效。 */
+    private fun refreshBtAudioSwitch() {
+        val bluetooth = AudioOutputPrefs.bluetooth(this)
+        switchBtAudio.isChecked = bluetooth
+        btAudioDesc.text =
+            getString(
+                if (bluetooth) R.string.main_bt_audio_desc_on else R.string.main_bt_audio_desc,
+            )
+    }
+
+    /** 首页「靠近车机自动启动」开关状态；未选目标时给出提示。 */
+    private fun refreshCarApproachSwitch() {
+        val enabled = CarApproachPrefs.enabled(this)
+        switchCarApproach.isChecked = enabled
+        carApproachDesc.text =
+            getString(
+                when {
+                    !enabled -> R.string.main_car_approach_desc
+                    TargetDevicePrefs.get(this) == null -> R.string.sf_car_approach_no_target
+                    else -> R.string.main_car_approach_desc
+                },
+            )
     }
 
     /** 连接准备计数：CarWith/CarLife 组件 / 热点 SSID / 蓝牙配对 / 音频来源。 */
@@ -1584,16 +1718,26 @@ class MainActivity : AppCompatActivity() {
             val enabled = SessionController.audioEnabledForSession
             btnAudio.text = getString(if (enabled) R.string.ma_audio_enabled else R.string.ma_audio_on)
             btnAudio.setTextColor(getColor(if (enabled) R.color.m3_ok else R.color.m3_primary))
-            audioDesc.text = getString(R.string.ma_audio_carwith_desc)
+            rowBtAudio.visibility = View.VISIBLE
+            refreshBtAudioSwitch()
+            val btAudio = AudioOutputPrefs.bluetooth(this)
+            audioDesc.text =
+                getString(
+                    if (btAudio) R.string.ma_audio_carwith_bt_desc else R.string.ma_audio_carwith_desc,
+                )
         } else if (projectionReady) {
+            rowBtAudio.visibility = View.GONE
             btnAudio.text = getString(R.string.ma_audio_granted)
             btnAudio.setTextColor(getColor(R.color.m3_ok))
             audioDesc.text = getString(R.string.ma_audio_projection_ready)
         } else {
+            rowBtAudio.visibility = View.GONE
             btnAudio.text = getString(R.string.main_audio_grant)
             btnAudio.setTextColor(getColor(R.color.m3_primary))
             audioDesc.text = getString(R.string.main_audio_desc_needs)
         }
+        rowCarApproach.visibility = View.VISIBLE
+        refreshCarApproachSwitch()
         readyCount.text = "$ready/4"
     }
 
@@ -2686,6 +2830,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 应用在前台时补齐「靠近探测」前台服务（进程可能刚被手动打开/重建）。
+        AppUiPresence.lastBringUpAt = System.currentTimeMillis()
         SessionController.onMainUiVisibilityChanged(true)
         mainHandler.post(heroTick)
         // 旋转/重建后尚未接受：用原截止时刻续弹（不重新等 10 秒）

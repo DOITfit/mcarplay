@@ -91,7 +91,16 @@
     <string name="ma_bt_target_gone">Target \"%1$s\" is no longer paired; choose a device again</string>
     <string name="ma_audio_enabled">On</string>
     <string name="ma_audio_on">Turn on</string>
+    <string name="main_auto_connect_title">AUTO CONNECT</string>
+    <string name="main_bt_audio_title">Sound via car Bluetooth</string>
+    <string name="main_bt_audio_desc">When on, native CarWith sound uses car Bluetooth A2DP and CarPlay carries video only; the car must keep A2DP connected.</string>
+    <string name="main_bt_audio_desc_on">On: native CarWith sound uses car Bluetooth A2DP; CarPlay carries video only.</string>
+    <string name="main_car_approach_title">Start when near the car</string>
+    <string name="main_car_approach_desc">Open the app and connect automatically when the selected car reconnects Bluetooth (system ACL only; no scanning or polling).</string>
+    <string name="ma_bt_audio_toggle_on">Car Bluetooth output on: enable sound on the next connection and keep A2DP connected</string>
+    <string name="ma_bt_audio_toggle_off">Car Bluetooth output off; sound uses AirPlay</string>
     <string name="ma_audio_carwith_desc">Native CarWith sound · no extra screen-capture permission</string>
+    <string name="ma_audio_carwith_bt_desc">Native CarWith sound · car Bluetooth A2DP output (A2DP must stay connected)</string>
     <string name="ma_audio_granted">Allowed</string>
     <string name="ma_audio_projection_ready">Screen-capture permission ready · optional when connecting</string>
     <string name="ma_badge_not_set">Not set</string>

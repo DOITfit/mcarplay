@@ -245,7 +245,7 @@ Pad 已成功覆盖安装最新版。首次测试复现“只补授 Wi-Fi 权限
 1. 初次日志中 AirPlay pair-setup / pair-verify 成功，但会话 SETUP 返回 403；mcarplay 仍使用占位蓝牙 MAC，Shizuku 未运行。WinPlay V1.2.4 的 `run.ts` 按所选手机蓝牙地址过滤，`cpStack.ts` 在 SETUP 的 `deviceID` 不匹配时返回 403。按真实蓝牙身份路径复测后，Shizuku 显示就绪并进入视频发送。
 2. 11:00:36.410 已发送第一个关键帧（18399B），11:00:38.705 原生源累计 41 帧、1920×1140；11:00:38.733 发送第 41 帧关键帧，随后约 0.23 秒关闭七路、iAP 隧道、事件通道、蓝牙组件和保活服务。此前 feedback 持续返回 200、timing 和视频 keepAlive 正常；粘贴片段没有先于收尾的网络写入失败证据。发送成功不等于接收端已完成解码。
 3. 末尾的「已手动断开」来自 `SessionController.disconnect()` 的统一文案；用户确认没有点击取消/断开。关闭「设置 → 显示 → 上车自动连接」后，用户确认可以连接。该开关也控制 ACL 断开自动收尾，开关对照将问题定位到这条自动路径。
-4. 源码调用链为 `CarBluetoothReceiver` 收到目标设备 `ACL_DISCONNECTED` → `CarPlayService.ACTION_AUTO_STOP_SESSION` → `SessionController.disconnect()`。原路径不检查仍在运行的 Wi-Fi 视频，并把诊断写成 `USER_STOP`。WinPlay V1.2.4 在网络 iAP 的 MFi 认证通过后关闭旧配件并结束原生蓝牙桥接：[`run.ts`（标签 V1.2.4）](https://github.com/Roylyl/WinPlay/blob/V1.2.4/src/engine/run.ts#L81-L93)。这一正常蓝牙交接可触发上述误停；尚无完整双端日志给出该次 ACL 事件的精确时刻。
+4. 源码调用链为 `CarApproachReceiver` 收到目标设备 `ACL_DISCONNECTED` → `CarPlayService.ACTION_AUTO_STOP_SESSION` → `SessionController.disconnect()`。原路径不检查仍在运行的 Wi-Fi 视频，并把诊断写成 `USER_STOP`。WinPlay V1.2.4 在网络 iAP 的 MFi 认证通过后关闭旧配件并结束原生蓝牙桥接：[`run.ts`（标签 V1.2.4）](https://github.com/Roylyl/WinPlay/blob/V1.2.4/src/engine/run.ts#L81-L93)。这一正常蓝牙交接可触发上述误停；尚无完整双端日志给出该次 ACL 事件的精确时刻。
 
 修复：自动收尾命令执行时，若当前 Wi-Fi 视频发送端已启动则保留会话，首帧尚未到达也同样保护；媒体通道继续按既有结束流程清理。视频未启动时仍自动收尾，诊断使用 `BT_LINK_CLOSED`，最终提示区分自动与手动。新增实际 TCP 回环回归，模拟首帧前和首帧后的蓝牙释放，验证后续帧仍能传输；同时覆盖重复 ACL 命令、发送端停止后和没有发送端时的自动结束分支。修复包尚未在用户设备复测，音频、触控及长时稳定性未由本轮日志确认；临时规避为关闭「上车自动连接」后手动启动。
 

@@ -238,7 +238,7 @@ class CarPlayService : Service() {
         private const val CHANNEL_ID = "carplay_connection"
         private const val NOTIFICATION_ID = 1
 
-        /** 上车自动连接：车机蓝牙 ACL 连上时由 CarBluetoothReceiver 投递。 */
+        /** 上车自动连接：车机蓝牙 ACL 连上时由 CarApproachReceiver 投递。 */
         const val ACTION_AUTO_START_SESSION = "com.mcarplay.app.action.AUTO_START"
 
         /** 目标蓝牙 ACL 断开时检查是否自动收摊；Wi-Fi 视频已启动时保留会话。 */

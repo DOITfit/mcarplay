@@ -11,7 +11,10 @@ import android.widget.TextView
 import com.mcarplay.app.R
 import com.mcarplay.app.SessionController
 import com.mcarplay.app.audio.AudioDuckingPrefs
+import com.mcarplay.app.audio.AudioOutputPrefs
 import com.mcarplay.app.bt.AutoConnectPrefs
+import com.mcarplay.app.bt.CarApproachPrefs
+import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.compat.CompatibilityPrefs
 import com.mcarplay.app.input.TouchRouter
 import com.mcarplay.app.launcher.AppIcons
@@ -664,6 +667,41 @@ class DisplayPanelFragment : SettingsPanelFragment() {
         autoConnectOn.setOnClickListener { applyAutoConnect(true) }
         autoConnectOff.setOnClickListener { applyAutoConnect(false) }
 
+        // 靠近车机自动启动（移植 CarPToCarL）：只听系统 ACL，不扫描、不轮询。
+        val approachOn = view.findViewById<TextView>(R.id.btnProximityOn)
+        val approachOff = view.findViewById<TextView>(R.id.btnProximityOff)
+        var approachEnabled = CarApproachPrefs.enabled(ctx)
+
+        fun refreshApproach(enabled: Boolean) {
+            approachOn.setBackgroundResource(
+                if (enabled) R.drawable.bg_segment_sel else R.drawable.bg_segment,
+            )
+            approachOn.setTextColor(if (enabled) 0xFFFFFFFF.toInt() else 0xFF8E8E93.toInt())
+            approachOff.setBackgroundResource(
+                if (enabled) R.drawable.bg_segment else R.drawable.bg_segment_sel,
+            )
+            approachOff.setTextColor(if (enabled) 0xFF8E8E93.toInt() else 0xFFFFFFFF.toInt())
+        }
+
+        refreshApproach(approachEnabled)
+
+        fun applyApproach(enabled: Boolean) {
+            if (enabled == approachEnabled) return
+            approachEnabled = enabled
+            CarApproachPrefs.setEnabled(ctx, enabled)
+            refreshApproach(enabled)
+            val noTarget = enabled && TargetDevicePrefs.get(ctx) == null
+            hostToast(
+                if (noTarget) {
+                    getString(R.string.sf_car_approach_no_target)
+                } else {
+                    getString(if (enabled) R.string.sf_car_approach_on else R.string.sf_car_approach_off)
+                },
+            )
+        }
+        approachOn.setOnClickListener { applyApproach(true) }
+        approachOff.setOnClickListener { applyApproach(false) }
+
         // HID 原始日志（键位校准）：默认关；打开后每帧 hidSendReport 写一行 HID-RAW
         val hidRawOn = view.findViewById<TextView>(R.id.btnHidRawOn)
         val hidRawOff = view.findViewById<TextView>(R.id.btnHidRawOff)
@@ -700,6 +738,36 @@ class DisplayPanelFragment : SettingsPanelFragment() {
         ) { enabled ->
             CompatibilityPrefs.setLowEndMode(ctx, enabled)
             hostToast(getString(if (enabled) R.string.sf_low_end_on else R.string.sf_low_end_off))
+        }
+
+        // 车机蓝牙 A2DP 输出（默认关）：CarWith 声音本机混音后走 A2DP，CarPlay 仅视频
+        bindToggle(
+            view.findViewById(R.id.btnBtAudioOn),
+            view.findViewById(R.id.btnBtAudioOff),
+            AudioOutputPrefs.bluetooth(ctx),
+        ) { enabled ->
+            AudioOutputPrefs.setBluetooth(ctx, enabled)
+            hostToast(getString(if (enabled) R.string.sf_bt_audio_on else R.string.sf_bt_audio_off))
+        }
+
+        // 后台连接：不拉起 CarWith，只附着已在运行的 CarLife 监听
+        bindToggle(
+            view.findViewById(R.id.btnBackgroundOn),
+            view.findViewById(R.id.btnBackgroundOff),
+            CompatibilityPrefs.backgroundCarWith(ctx),
+        ) { enabled ->
+            CompatibilityPrefs.setBackgroundCarWith(ctx, enabled)
+            hostToast(getString(if (enabled) R.string.sf_background_on else R.string.sf_background_off))
+        }
+
+        // 低延迟音频（实验）：AirPlay 音频缓冲 250ms → 100ms
+        bindToggle(
+            view.findViewById(R.id.btnLowLatencyOn),
+            view.findViewById(R.id.btnLowLatencyOff),
+            AudioOutputPrefs.lowLatency(ctx),
+        ) { enabled ->
+            AudioOutputPrefs.setLowLatency(ctx, enabled)
+            hostToast(getString(if (enabled) R.string.sf_low_latency_on else R.string.sf_low_latency_off))
         }
 
         // 兼容兜底开关（默认关）：恢复统一兼容策略之前的宽松行为，下次连接起效
