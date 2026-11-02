@@ -8,6 +8,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Process
 import android.provider.Settings
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /** Uses ordinary intents to open CarWith's exported settings or compatibility entry. */
 object CarLifeLauncher {
@@ -35,6 +37,20 @@ object CarLifeLauncher {
 
     /** The component's name contains Adb, but this ordinary app intent needs no ADB client. */
     fun launchPublicEntry(context: Context): Boolean = startActivity(context, CARWITH_ENTRY)
+
+    /**
+     * CarWith 的 CarLife 七路监听是否已经在运行。已运行时直接附着，不拉起 CarWith 界面；
+     * 只在监听未启动时才需要 public entry。探测只建立/关闭一条本地 TCP，不参与握手。
+     */
+    fun hasOpenListener(port: Int = CarLifeProtocol.PORT_COMMAND): Boolean =
+        runCatching {
+            Socket().use {
+                it.connect(InetSocketAddress("127.0.0.1", port), LISTENER_PROBE_TIMEOUT_MS)
+                true
+            }
+        }.getOrDefault(false)
+
+    private const val LISTENER_PROBE_TIMEOUT_MS = 250
 
     /**
      * 后台发起的 startActivity 可能被系统静默丢弃且不抛异常（2026-10-26 小米实测：

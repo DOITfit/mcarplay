@@ -8,10 +8,12 @@ import androidx.annotation.StringRes
 import com.mcarplay.app.airplay.AirPlayClient
 import com.mcarplay.app.airplay.PairVerifyClient
 import com.mcarplay.app.audio.AudioDuckingPrefs
+import com.mcarplay.app.audio.AudioOutputPrefs
 import com.mcarplay.app.audio.AudioProfile
 import com.mcarplay.app.audio.AudioProfileMemory
 import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
+import com.mcarplay.app.audio.BluetoothAudioSink
 import com.mcarplay.app.audio.CarLifeAudioBridge
 import com.mcarplay.app.bt.BtProfiles
 import com.mcarplay.app.bt.BtSessionGate
@@ -21,6 +23,7 @@ import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.capture.HiddenDisplaySource
 import com.mcarplay.app.carlife.CarLifeAudioEvent
 import com.mcarplay.app.carlife.CarLifeJoinGate
+import com.mcarplay.app.carlife.CarLifeLaunchStrategy
 import com.mcarplay.app.carlife.CarLifeLauncher
 import com.mcarplay.app.carlife.CarLifeProtocol
 import com.mcarplay.app.carlife.CarLifeSession
@@ -39,6 +42,7 @@ import com.mcarplay.app.iap2.Iap2MessageIds
 import com.mcarplay.app.iap2.Iap2SenderSession
 import com.mcarplay.app.iap2.ReceiverProfile
 import com.mcarplay.app.input.ConsumerKeys
+import com.mcarplay.app.input.HidInputProfile
 import com.mcarplay.app.input.HidNavigation
 import com.mcarplay.app.input.TouchReports
 import com.mcarplay.app.input.TouchRouter
@@ -109,6 +113,8 @@ object SessionController {
      * 奥迪 MMI 9310 实测 0x4301 晚到 2 分 35 秒——保活窗口必须显著长于它；
      * 超时拆链让 BT 重连循环接管（与旧「8s 拆链」的区别只在窗口长度）。
      */
+    private const val LOW_END_TOUCH_THROTTLE_MS = 12L
+
     private const val PENDING_START_SESSION_WAIT_MS = 5 * 60_000L
 
     /**
@@ -375,6 +381,10 @@ object SessionController {
     /** 本次会话是否在车机侧播放声音（由「启动连接」弹窗选择）。 */
     @Volatile
     var audioEnabledForSession: Boolean = false
+
+    /** 本次会话是否把 CarWith 声音改走车机蓝牙 A2DP（此时 AirPlay 无音频流）。 */
+    @Volatile
+    var audioOutputOnBluetooth: Boolean = false
 
     /**
      * 「开启声音（兼容档）」：候选里把非 media 档（compatibility 等）排前面。
@@ -693,6 +703,8 @@ object SessionController {
                         ConnectionDiagnostics.timeline.finish(output.attempt, session.endDiagnosticCode, true, reason)
                         appendLog("CARLIFE: 会话结束 - $reason")
                         nativeAudioBridge?.stop()
+                        audioOutputOnBluetooth = false
+                        carLifeTouchDown = false
                         output.sender.stop()
                     } else {
                         appendLog("CARLIFE: 未接入推流的旧会话结束 - $reason")
@@ -716,6 +728,12 @@ object SessionController {
                 },
                 log = { line -> appendLog(line) },
                 requestedVideoSize = requestedVideoSize,
+                launchStrategy =
+                    if (CompatibilityPrefs.backgroundCarWith(context)) {
+                        CarLifeLaunchStrategy.ATTACH_EXISTING
+                    } else {
+                        CarLifeLaunchStrategy.EXPORTED_ENTRY
+                    },
             )
         return session
     }
@@ -954,6 +972,8 @@ object SessionController {
         audioSender = null
         nativeAudioBridge?.stop()
         nativeAudioBridge = null
+        audioOutputOnBluetooth = false
+        carLifeTouchDown = false
         currentSharedSecret = null
         currentAudioHost = null
         currentHiddenSource?.release()
@@ -1912,18 +1932,9 @@ object SessionController {
         host: String?,
     ): Boolean {
         val diagnosticAttempt = ConnectionDiagnostics.timeline.snapshot()?.id
+        audioOutputOnBluetooth = false
         if (!audioEnabledForSession) {
             appendLog("AUDIO: 本次连接未开启车机侧声音（「启动连接」弹窗选择）——仅推视频")
-            return false
-        }
-        if (sharedSecret == null) {
-            // 明文会话（et=NONE）没有共享密钥可派生 DataStream 输出密钥：
-            // 推出去的 RTP 车机无法解密。宁可不推，也不要制造「有包无声」的假象。
-            appendLog("AUDIO: 明文会话（未配对）无共享密钥——跳过音频通道")
-            return false
-        }
-        if (host == null) {
-            appendLog("AUDIO: 无接收端可用地址，跳过音频通道")
             return false
         }
         val projection = CarPlayService.mediaProjection
@@ -1933,6 +1944,44 @@ object SessionController {
                 "AUDIO: 缺少投屏权限（播放捕获依赖 MediaProjection）——音频通道未启动。" +
                     "现在点「申请投屏权限」也可即时补启（无需重连）；注意「断开连接」会停服务并连带失效投屏授权",
             )
+            return false
+        }
+        // 车机蓝牙输出：CarWith PCM 在本机混音后直接走 A2DP，不需要 AirPlay
+        // 音频 SETUP/共享密钥；CarPlay 本次只推视频。A2DP 不可用时回退 AirPlay。
+        if (AudioOutputPrefs.bluetooth(context) && useNativeCarLifeAudio) {
+            val bridge =
+                CarLifeAudioBridge(
+                    BluetoothAudioSink(
+                        context.applicationContext,
+                        AudioOutputPrefs.SAMPLE_RATE,
+                        ::appendLog,
+                    ),
+                    AudioOutputPrefs.SAMPLE_RATE,
+                    AudioDuckingPrefs.config(context.applicationContext),
+                ) { line -> appendLog(line) }
+            nativeAudioBridge = bridge
+            if (bridge.start()) {
+                audioOutputOnBluetooth = true
+                audioSender = null
+                activeAudioProfile = null
+                activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
+                diagnosticAttempt?.let {
+                    ConnectionDiagnostics.timeline.note(it, "AUDIO_OUTPUT bluetooth-a2dp")
+                }
+                appendLog("AUDIO: 声音输出=车机蓝牙 A2DP；CarPlay 仅推视频（无 AirPlay 音频流）")
+                return false
+            }
+            nativeAudioBridge = null
+            appendLog("AUDIO: 车机蓝牙 A2DP 不可用——回退 AirPlay 音频")
+        }
+        if (sharedSecret == null) {
+            // 明文会话（et=NONE）没有共享密钥可派生 DataStream 输出密钥：
+            // 推出去的 RTP 车机无法解密。宁可不推，也不要制造「有包无声」的假象。
+            appendLog("AUDIO: 明文会话（未配对）无共享密钥——跳过音频通道")
+            return false
+        }
+        if (host == null) {
+            appendLog("AUDIO: 无接收端可用地址，跳过音频通道")
             return false
         }
         return try {
@@ -2036,7 +2085,7 @@ object SessionController {
                         AudioDuckingPrefs.config(context.applicationContext),
                     ) { line -> appendLog(line) }
                 nativeAudioBridge = bridge
-                if (!sender.startExternalSource()) {
+                if (!bridge.start()) {
                     bridge.stop()
                     nativeAudioBridge = null
                     audioSender = null
@@ -2044,7 +2093,6 @@ object SessionController {
                     activeAudioStartedAt = 0L
                     false
                 } else {
-                    bridge.start()
                     true
                 }
             } else if (projection == null || !sender.start(projection)) {
@@ -2838,6 +2886,11 @@ object SessionController {
                             currentSharedSecret = sessionKey
                             currentAudioHost =
                                 client.activeHost ?: EndpointHosts.candidates(client.currentEndpoint.ipAddresses).firstOrNull()
+                            // 描述符在会话内不变：预解析一次，触摸热路径不再重复扫描。
+                            val hidProfiles =
+                                setup.hidDescriptors.mapValues { (_, descriptor) ->
+                                    HidInputProfile.from(descriptor)
+                                }
                             client.connectEventChannel(sessionKey, setup) { command ->
                                 when (command["type"]) {
                                     "hidSendReport" -> {
@@ -2851,8 +2904,10 @@ object SessionController {
                                         // DiPlay 的 knob(4B) 与 telephony(1B) 报告长度与媒体键重叠，
                                         // 只靠长度会误判（如 telephony usage 0xB3 会误发「快进」）。
                                         val descriptor = uuid?.let { setup.hidDescriptors[it] }
+                                        val hidProfile = uuid?.let { hidProfiles[it] }
                                         val keyMap =
-                                            descriptor?.let(ConsumerKeys::parseDescriptor)
+                                            hidProfile?.keyMap
+                                                ?: descriptor?.let(ConsumerKeys::parseDescriptor)
                                         val rawValue =
                                             report
                                                 ?.takeIf { it.isNotEmpty() }
@@ -2877,7 +2932,13 @@ object SessionController {
                                                             " desc=${descriptor?.size ?: 0}B",
                                                     )
                                                 }
-                                                HidNavigation.handle(uuid.orEmpty(), descriptor, report)
+                                                HidNavigation.handle(
+                                                    uuid.orEmpty(),
+                                                    descriptor,
+                                                    report,
+                                                    navigationDevice =
+                                                        if (descriptor != null && hidProfile != null) hidProfile.navigation else null,
+                                                )
                                             } else {
                                                 emptyList()
                                             }
@@ -2886,7 +2947,8 @@ object SessionController {
                                                 // 触摸格式按设备描述符判定（Digitizer 页 + 单指/多槽），
                                                 // 描述符不可用时按报文长度回退——不依赖车机型号或 uuid
                                                 val touchFormat =
-                                                    descriptor?.let(TouchReports::formatFromDescriptor)
+                                                    hidProfile?.touchFormat
+                                                        ?: descriptor?.let(TouchReports::formatFromDescriptor)
                                                 TouchReports.parse(report, touchFormat)
                                             } else {
                                                 null
@@ -2924,15 +2986,8 @@ object SessionController {
                                             // 静默计数，避免释放事件刷屏
                                             consumerReleaseCount++
                                         } else if (!contacts.isNullOrEmpty()) {
-                                            if (touchLogCount <= 30 || touchLogCount % 50 == 0) {
-                                                appendLog(
-                                                    "EVENT: 触摸 " +
-                                                        contacts.joinToString {
-                                                            "#${it.slot}(${it.xPixels},${it.yPixels})${if (it.down) "↓" else "↑"}"
-                                                        },
-                                                )
-                                            }
-                                            touchLogCount++
+                                            // 触摸热路径不打日志：appendLog 是同步文件写入，
+                                            // 即使只写前 30 次，也会在用户刚上手时卡住输入线程。
                                             val carLife = currentCarLifeSession
                                             if (carLife != null) {
                                                 val contact =
@@ -2949,7 +3004,12 @@ object SessionController {
                                                     )
                                                 if (point != null) {
                                                     if (carLife.sendTouch(point.first, point.second, contact.down)) {
-                                                        ReceiverDetectionRuntime.touch(client.currentEndpoint.observation)
+                                                        // 只在按下/抬起边沿计数：move 每帧都 copy 检测草稿
+                                                        // 会挤占输入线程，检测本身也只需要手势次数。
+                                                        if (contact.down != carLifeTouchDown) {
+                                                            carLifeTouchDown = contact.down
+                                                            ReceiverDetectionRuntime.touch(client.currentEndpoint.observation)
+                                                        }
                                                     }
                                                 }
                                             } else {
@@ -3104,6 +3164,11 @@ object SessionController {
                                             streamW,
                                             streamH,
                                         )
+                                    // 低配模式减少送去车机的 HID move 报文；用户显式设置的节流优先。
+                                    val configuredThrottle = appContext?.let { DisplayPrefs.moveThrottleMs(it) } ?: 0
+                                    TouchRouter.setSessionThrottle(
+                                        if (lowEnd && configuredThrottle == 0) LOW_END_TOUCH_THROTTLE_MS else configuredThrottle.toLong(),
+                                    )
                                     appendLog(
                                         "DISPLAY: 流 ${setup.displayWidth}x${setup.displayHeight} → " +
                                             "${streamW}x$streamH（$scalePct%）@${effectiveFps}fps" +
@@ -3151,6 +3216,7 @@ object SessionController {
                                                 StreamingWifiLock.release()
                                                 nativeAudioBridge?.stop()
                                                 nativeAudioBridge = null
+                                                audioOutputOnBluetooth = false
                                                 // 会话真实结束：解除静默降噪（客户端恢复探测/重连）
                                                 appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
                                                 BtSessionGate.sessionActive = false
@@ -3238,7 +3304,7 @@ object SessionController {
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
                                 // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。
                                 val audioStarted = startAudioChannel(context, client, sessionKey, host)
-                                if (audioEnabledForSession && !audioStarted) {
+                                if (audioEnabledForSession && !audioStarted && !audioOutputOnBluetooth) {
                                     ConnectionDiagnostics.timeline.issue(diagnosticAttempt, DiagnosticCode.AUDIO_UNAVAILABLE)
                                 }
                                 if (audioStarted) {
@@ -3373,9 +3439,9 @@ object SessionController {
         onBound(false)
     }
 
-    /** 触摸/隧道事件低频计数（迁移自 MainActivity 字段，保持日志节流行为一致）。 */
+    /** 当前 CarWith 触摸是否处于按下状态（检测计数只取按下/抬起边沿）。 */
     @Volatile
-    private var touchLogCount = 0
+    private var carLifeTouchDown = false
 
     /** 车机媒体键「释放」报文计数（值为 0 的 1 字节报告，静默丢弃，仅计数备查）。 */
     @Volatile

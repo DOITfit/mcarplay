@@ -97,7 +97,15 @@ class CarLifeSession(
             fail("未找到 CarWith（${CarLifeLauncher.CARWITH_PACKAGE}）或 CarLife 组件")
             return false
         }
-        if (launchStrategy == CarLifeLaunchStrategy.EXPORTED_ENTRY) {
+        val listenersOpen = CarLifeLauncher.hasOpenListener()
+        if (launchStrategy == CarLifeLaunchStrategy.ATTACH_EXISTING && !listenersOpen) {
+            fail("后台连接已开启：CarWith 的 CarLife 监听未启动。请先在 CarWith 中连接并保持后台运行，或关闭「后台连接（不拉起 CarWith）」")
+            return false
+        }
+        if (launchStrategy == CarLifeLaunchStrategy.EXPORTED_ENTRY && listenersOpen) {
+            // CarWith 已在运行（可能被用户放在后台）：直接附着，避免把 CarWith 界面拉到前台。
+            log("CARLIFE: 检测到已有 CarWith 监听——直接附着，不拉起 CarWith 界面")
+        } else if (launchStrategy == CarLifeLaunchStrategy.EXPORTED_ENTRY) {
             entryLaunchedInBackground = !isAppInForeground()
             if (!CarLifeLauncher.launchPublicEntry(appContext)) {
                 fail("当前 CarWith 版本不允许打开兼容入口，请检查 CarWith 设置")

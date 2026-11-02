@@ -8,6 +8,7 @@ import com.mcarplay.app.airplay.AirPlayCrypto
 import com.mcarplay.app.airplay.BinaryPlist
 import com.mcarplay.app.airplay.StreamFrameCipher
 import com.mcarplay.app.net.TcpLiveness
+import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -68,6 +69,13 @@ class VideoSender(
     val videoWidth: Int get() = width
     val videoHeight: Int get() = height
     private var socket: Socket? = null
+
+    /**
+     * 视频口输出缓冲：把 128B 头与负载合并成一次 write/flush。
+     * tcpNoDelay 下两次小写会变成两个 TCP 段，低配车机要多处理一倍网络中断；
+     * 256KB 足够容纳常见关键帧（日志实测 64–72KB），P 帧更是一次写出。
+     */
+    private var output: BufferedOutputStream? = null
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
     private val running = AtomicBoolean(false)
@@ -87,9 +95,9 @@ class VideoSender(
     private var keepAliveCount = 0L
     private var cachedVideoConfig: ByteArray? = null
 
-    // 最多 16 帧（30fps ≈ 0.53s、60fps ≈ 0.27s）。排队只会累积端到端延迟；
+    // 最多 6 帧（30fps ≈ 0.2s、60fps ≈ 0.1s）。排队只会累积端到端延迟；
     // 网络/接收端跟不上时宁可丢旧 GOP 再从关键帧恢复。
-    private val externalQueue = java.util.concurrent.LinkedBlockingQueue<ExternalVideoFrame>(16)
+    private val externalQueue = java.util.concurrent.LinkedBlockingQueue<ExternalVideoFrame>(6)
 
     /** 外部帧队列溢出的次数（诊断日志限流用；仅 CarLife 读线程访问）。 */
     private var externalOverflowCount = 0L
@@ -127,10 +135,14 @@ class VideoSender(
             val client = Socket()
             client.connect(InetSocketAddress(host, dataPort), 5_000)
             client.tcpNoDelay = true
+            // 低延迟：限制内核发送缓冲/未发字节；接收端变慢时让 write 尽早阻塞，
+            // 由应用层队列丢旧帧，而不是在 Wi-Fi 内核队列里堆积几百毫秒。
+            runCatching { client.sendBufferSize = VIDEO_SEND_BUFFER_BYTES }
             // 推流是长连接：车机熄火/走出热点时链路常不发 RST，写入会阻塞在满窗口上，
             // 编码器线程随之卡死（表现为「画面停在最后一帧」）。
-            TcpLiveness.configure(client, "视频数据口", log)
+            TcpLiveness.configure(client, "视频数据口", log, notSentLowAtBytes = VIDEO_NOT_SENT_LOWAT_BYTES)
             socket = client
+            output = BufferedOutputStream(client.getOutputStream(), OUTPUT_BUFFER_BYTES)
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
             true
         } catch (error: Exception) {
@@ -253,6 +265,8 @@ class VideoSender(
         encoder = null
         runCatching { inputSurface?.release() }
         inputSurface = null
+        runCatching { output?.flush() }
+        output = null
         runCatching { socket?.close() }
         socket = null
     }
@@ -290,7 +304,7 @@ class VideoSender(
     fun submitExternalFrame(frame: ExternalVideoFrame): Boolean {
         if (externalVideoSource == null || !running.get()) return false
         if (externalQueue.offer(frame)) return true
-        // The queue holds up to 16 frames (~0.3-0.5s). Draining that stale backlog
+        // The queue holds up to 6 frames (~0.1-0.2s). Draining that stale backlog
         // first only grows latency; a dropped GOP is already unavoidable once
         // the queue is full, so clear it and resume from a key frame.
         externalQueue.clear()
@@ -320,12 +334,12 @@ class VideoSender(
     }
 
     private fun drainExternalVideo() {
-        val output = socket?.getOutputStream() ?: return
+        val stream = output ?: socket?.getOutputStream() ?: return
         try {
             while (running.get()) {
                 val frame = externalQueue.poll(250, java.util.concurrent.TimeUnit.MILLISECONDS)
                 if (frame == null) {
-                    maybeSendKeepAlive(output)
+                    maybeSendKeepAlive(stream)
                     continue
                 }
                 val nalUnits = splitAnnexB(frame.data)
@@ -335,14 +349,14 @@ class VideoSender(
                 if (sps != null && pps != null) {
                     val config = buildAvcC(sps, pps)
                     if (!config.contentEquals(cachedVideoConfig)) {
-                        sendVideoConfigBytes(config, output)
+                        sendVideoConfigBytes(config, stream)
                     }
                 }
                 if (!configSent) continue
                 val packed = packLengthPrefixed(nalUnits)
-                sendPlainFrame(packed, frame.keyFrame, output)
+                sendPlainFrame(packed, frame.keyFrame, stream)
                 runCatching { onExternalFrameSent?.invoke(packed.size) }
-                maybeSendKeepAlive(output)
+                maybeSendKeepAlive(stream)
             }
         } catch (error: Exception) {
             log("VIDEO: 外部视频推流中止 - ${error.message}")
@@ -442,7 +456,7 @@ class VideoSender(
 
     private fun drainEncoder() {
         val codec = encoder ?: return
-        val output = socket?.getOutputStream() ?: return
+        val stream = output ?: socket?.getOutputStream() ?: return
         val bufferInfo = MediaCodec.BufferInfo()
         try {
             while (running.get()) {
@@ -457,7 +471,7 @@ class VideoSender(
                     }
                 when {
                     index == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                        maybeSendKeepAlive(output)
+                        maybeSendKeepAlive(stream)
                         continue
                     }
 
@@ -465,12 +479,12 @@ class VideoSender(
                         val buffer = codec.getOutputBuffer(index) ?: continue
                         val flags = bufferInfo.flags
                         if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                            sendVideoConfig(buffer, bufferInfo.size, output)
+                            sendVideoConfig(buffer, bufferInfo.size, stream)
                         } else if (bufferInfo.size > 0) {
-                            sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                            sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, stream)
                         }
                         codec.releaseOutputBuffer(index, false)
-                        maybeSendKeepAlive(output)
+                        maybeSendKeepAlive(stream)
                     }
                 }
             }
@@ -726,6 +740,15 @@ class VideoSender(
         private const val STALL_TIMEOUT_MS = 10_000L
 
         private const val STALL_CHECK_MS = 2_000L
+
+        /** 视频口写缓冲（足以容纳常见 IDR，避免头/负载分成两个 TCP 段）。 */
+        private const val OUTPUT_BUFFER_BYTES = 256 * 1024
+
+        /** 视频口内核发送缓冲上限（低延迟队列，避免内核层堆积）。 */
+        private const val VIDEO_SEND_BUFFER_BYTES = 128 * 1024
+
+        /** 视频口 TCP_NOTSENT_LOWAT（8KB ≈ 1Mbps 码率下约 65ms 未发数据上限）。 */
+        private const val VIDEO_NOT_SENT_LOWAT_BYTES = 8 * 1024
 
         /** 每个长度前缀 NAL 的 4 字节大端长度字段。 */
         private const val LENGTH_PREFIX_SIZE = 4

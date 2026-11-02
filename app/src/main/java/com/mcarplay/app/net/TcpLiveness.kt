@@ -36,6 +36,13 @@ object TcpLiveness {
     private const val USER_TIMEOUT_MILLIS = 20_000
 
     /**
+     * Linux `TCP_NOTSENT_LOWAT`：限制内核里「已排队但尚未发出」的字节数。
+     * 视频口开启后，接收端变慢时 write 会更早阻塞，由应用层队列丢旧帧/重连，
+     * 而不是在 Wi-Fi 内核队列里堆出几百毫秒额外延迟。
+     */
+    private const val TCP_NOTSENT_LOWAT = 25
+
+    /**
      * 为长连接 socket 打开并调优 keepalive。失败只记日志、不抛——车机可能不需要它，
      * 但绝不能因为设置失败而挡住连接。
      */
@@ -43,6 +50,8 @@ object TcpLiveness {
         socket: Socket,
         label: String,
         log: (String) -> Unit,
+        /** >0 时尝试设置 TCP_NOTSENT_LOWAT（实时视频口用；老内核不支持时忽略）。 */
+        notSentLowAtBytes: Int = 0,
     ) {
         runCatching { socket.keepAlive = true }
         if (Build.VERSION.SDK_INT < 26) {
@@ -52,19 +61,21 @@ object TcpLiveness {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ParcelFileDescriptor.fromSocket(socket).use { duplicate ->
-                    tune(duplicate.fileDescriptor)
+                    tune(duplicate.fileDescriptor, notSentLowAtBytes, label, log)
                 }
             } else {
                 val fd =
                     socket.javaClass
                         .getMethod("getFileDescriptor\$")
                         .invoke(socket) as FileDescriptor
-                tune(fd)
+                tune(fd, notSentLowAtBytes, label, log)
             }
             log(
                 "TCP: $label keepalive 已启用" +
                     "（idle=${KEEP_IDLE_SECONDS}s interval=${KEEP_INTERVAL_SECONDS}s count=$KEEP_COUNT" +
-                    " userTimeout=${USER_TIMEOUT_MILLIS}ms）",
+                    " userTimeout=${USER_TIMEOUT_MILLIS}ms" +
+                    (if (notSentLowAtBytes > 0) " notsentLowat=${notSentLowAtBytes}B" else "") +
+                    "）",
             )
         } catch (error: Exception) {
             log("TCP: $label keepalive 调优失败（${error.javaClass.simpleName}: ${error.message}）")
@@ -72,10 +83,22 @@ object TcpLiveness {
     }
 
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.O)
-    private fun tune(fd: FileDescriptor) {
+    private fun tune(
+        fd: FileDescriptor,
+        notSentLowAtBytes: Int,
+        label: String,
+        log: (String) -> Unit,
+    ) {
         Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_KEEPIDLE, KEEP_IDLE_SECONDS)
         Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_KEEPINTVL, KEEP_INTERVAL_SECONDS)
         Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_KEEPCNT, KEEP_COUNT)
         Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, OsConstants.TCP_USER_TIMEOUT, USER_TIMEOUT_MILLIS)
+        if (notSentLowAtBytes > 0) {
+            runCatching {
+                Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_NOTSENT_LOWAT, notSentLowAtBytes)
+            }.onFailure {
+                log("TCP: $label 不支持 TCP_NOTSENT_LOWAT（${it.message}）——忽略")
+            }
+        }
     }
 }
